@@ -197,6 +197,26 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.runBundleAudit",
+        "title": "RailsForge: Run Gemfile.lock Security Audit (bundle-audit)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.analyzeMigration",
+        "title": "RailsForge: Check Migration Safety (Strong Migrations)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.goToPolicy",
+        "title": "RailsForge: Go to Pundit / CanCanCan Policy",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.goToComponent",
+        "title": "RailsForge: Go to ViewComponent",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.extractService",
         "title": "RailsForge: Extract Selection to Service Object",
         "category": "RailsForge"

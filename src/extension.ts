@@ -14,6 +14,10 @@ import { RuboCopProvider } from './lint/RuboCopProvider'
 import { BrakemanProvider } from './lint/BrakemanProvider'
 import { ServiceExtractor } from './refactor/ServiceExtractor'
 import { QueryExtractor } from './refactor/QueryExtractor'
+import { BundlerAuditScanner } from './lint/BundlerAuditScanner'
+import { StrongMigrationsAnalyzer } from './rails/StrongMigrationsAnalyzer'
+import { PolicyNavigator } from './rails/PolicyNavigator'
+import { ViewComponentResolver } from './rails/ViewComponentResolver'
 import { RailsAgent } from './agent/RailsAgent'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 
@@ -23,6 +27,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const mvcNavigator = new MVCNavigator()
   const rubocopProvider = new RuboCopProvider()
   const brakemanProvider = new BrakemanProvider()
+  const bundlerAuditScanner = new BundlerAuditScanner()
+  const strongMigrationsAnalyzer = new StrongMigrationsAnalyzer()
+  const policyNavigator = new PolicyNavigator()
+  const viewComponentResolver = new ViewComponentResolver()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
 
@@ -47,7 +55,19 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   // 3. Register Commands
-  registerCommands(context, mvcNavigator, routesIndexer, rubocopProvider, brakemanProvider, serviceExtractor, queryExtractor)
+  registerCommands(
+    context,
+    mvcNavigator,
+    routesIndexer,
+    rubocopProvider,
+    brakemanProvider,
+    bundlerAuditScanner,
+    strongMigrationsAnalyzer,
+    policyNavigator,
+    viewComponentResolver,
+    serviceExtractor,
+    queryExtractor,
+  )
 
   // 4. Register Chat Participant
   RailsChatParticipant.getInstance().register(context, agent, schemaIndexer, routesIndexer)
@@ -97,6 +117,10 @@ function registerCommands(
   routes: RoutesIndexer,
   rubocop: RuboCopProvider,
   brakeman: BrakemanProvider,
+  bundlerAuditScanner: BundlerAuditScanner,
+  strongMigrationsAnalyzer: StrongMigrationsAnalyzer,
+  policyNavigator: PolicyNavigator,
+  viewComponentResolver: ViewComponentResolver,
   serviceExtractor: ServiceExtractor,
   queryExtractor: QueryExtractor,
 ): void {
@@ -132,6 +156,27 @@ function registerCommands(
       const doc = await vscode.workspace.openTextDocument({ content: formatted, language: 'markdown' })
       await vscode.window.showTextDocument(doc)
     }),
+    vscode.commands.registerCommand('railsforge.runBundleAudit', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {return}
+      const report = await bundlerAuditScanner.runAudit(root)
+      const formatted = bundlerAuditScanner.formatReport(report)
+      const doc = await vscode.workspace.openTextDocument({ content: formatted, language: 'markdown' })
+      await vscode.window.showTextDocument(doc)
+    }),
+    vscode.commands.registerCommand('railsforge.analyzeMigration', async () => {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) {return}
+      const code = editor.document.getText()
+      const dangers = strongMigrationsAnalyzer.analyzeMigration(code)
+      if (dangers.length === 0) {
+        vscode.window.showInformationMessage('✓ Zero-downtime migration check passed! No dangerous operations found.')
+        return
+      }
+      const summary = dangers.map(d => `[${d.severity.toUpperCase()}] Line ${d.line}: ${d.title}\nFix: ${d.recommendation}`).join('\n\n')
+      const doc = await vscode.workspace.openTextDocument({ content: `# RailsForge Strong Migrations Report\n\n${summary}`, language: 'markdown' })
+      await vscode.window.showTextDocument(doc)
+    }),
     vscode.commands.registerCommand('railsforge.extractService', async () => {
       const editor = vscode.window.activeTextEditor
       if (!editor) {return}
@@ -165,6 +210,31 @@ function registerCommands(
       const res = queryExtractor.extractQuery(name, model, selection, [], root)
       queryExtractor.saveQueryFile(res.queryFilePath, res.queryCode)
       await editor.edit(edit => edit.replace(editor.selection, res.replacementCall))
+    }),
+    vscode.commands.registerCommand('railsforge.goToPolicy', () => {
+      const editor = vscode.window.activeTextEditor
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!editor || !root) {return}
+      const model = path.basename(editor.document.fileName, '.rb').replace(/(_controller|_spec)$/, '')
+      const policyPath = policyNavigator.resolvePolicyPath(model, root)
+      if (policyPath) {
+        void vscode.workspace.openTextDocument(policyPath).then(doc => vscode.window.showTextDocument(doc))
+      } else {
+        vscode.window.showWarningMessage(`No policy found for ${model}`)
+      }
+    }),
+    vscode.commands.registerCommand('railsforge.goToComponent', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {return}
+      const name = await vscode.window.showInputBox({ prompt: 'Enter Component Name (e.g. UserCardComponent)' })
+      if (!name) {return}
+      const comp = viewComponentResolver.resolveComponent(name, root)
+      if (comp) {
+        const doc = await vscode.workspace.openTextDocument(comp.classFile)
+        await vscode.window.showTextDocument(doc)
+      } else {
+        vscode.window.showWarningMessage(`Component ${name} not found in app/components/`)
+      }
     }),
   )
 }
