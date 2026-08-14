@@ -1,0 +1,260 @@
+{
+  "name": "railsforge",
+  "displayName": "RailsForge - Supercharged Ruby & Rails IDE",
+  "description": "All-in-one Ruby on Rails intelligence: Schema Peek, Fast MVC Navigation, Route Autocomplete, RuboCop Autocorrect, Brakeman Security, Service Object Extractors, and @rails AI Agent.",
+  "version": "0.1.0",
+  "publisher": "nemesis",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubhamtaywade82/railsforge"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets",
+    "Other"
+  ],
+  "keywords": [
+    "ruby",
+    "rails",
+    "rubocop",
+    "rspec",
+    "brakeman",
+    "activerecord",
+    "solargraph",
+    "ruby-lsp"
+  ],
+  "activationEvents": [
+    "onLanguage:ruby",
+    "onLanguage:erb",
+    "onLanguage:haml",
+    "onLanguage:slim",
+    "workspaceContains:Gemfile",
+    "workspaceContains:config/routes.rb"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "vscode:prepublish": "pnpm run compile",
+    "compile": "webpack --mode production",
+    "watch": "webpack --watch --mode development",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "type-check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "vsce-package": "vsce package --no-dependencies --allow-missing-repository -o railsforge.vsix"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "ruby",
+        "extensions": [
+          ".rb",
+          ".rake",
+          ".gemspec",
+          "Gemfile",
+          "Rakefile",
+          "Guardfile",
+          "Podfile"
+        ]
+      },
+      {
+        "id": "erb",
+        "extensions": [
+          ".erb",
+          ".html.erb"
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "RailsForge",
+      "properties": {
+        "railsForge.rubocop.autocorrectOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run safe RuboCop autocorrect on save"
+        },
+        "railsForge.rubocop.mode": {
+          "type": "string",
+          "enum": [
+            "safe",
+            "unsafe"
+          ],
+          "default": "safe",
+          "description": "RuboCop autocorrect mode: safe (-a) or unsafe (-A)"
+        },
+        "railsForge.brakeman.scanOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run Brakeman security scan on file save"
+        },
+        "railsForge.testing.framework": {
+          "type": "string",
+          "enum": [
+            "rspec",
+            "minitest"
+          ],
+          "default": "rspec",
+          "description": "Active testing framework for CodeLens test execution"
+        },
+        "railsForge.schema.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-index db/schema.rb on file changes"
+        },
+        "railsForge.routes.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-index config/routes.rb on file changes"
+        },
+        "railsForge.ollama.host": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL of the local Ollama instance"
+        },
+        "railsForge.ollama.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:14b",
+          "description": "Default Ollama model to use for @rails AI Agent"
+        }
+      }
+    },
+    "chatParticipants": [
+      {
+        "id": "railsforge.agent",
+        "name": "rails",
+        "fullName": "RailsForge (Ruby on Rails AI)",
+        "description": "Ruby on Rails engineering agent grounded in active schema, routes, and best practices.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explain",
+            "description": "Explain active Ruby / Rails code, associations, or queries"
+          },
+          {
+            "name": "fix",
+            "description": "Diagnose and fix RuboCop, Brakeman, or RSpec errors"
+          },
+          {
+            "name": "service",
+            "description": "Generate or extract decoupled Service Object"
+          },
+          {
+            "name": "scaffold",
+            "description": "Generate convention-compliant Rails models, migrations, and controllers"
+          },
+          {
+            "name": "spec",
+            "description": "Generate comprehensive RSpec / Minitest tests"
+          },
+          {
+            "name": "optimize",
+            "description": "Analyze queries, detect N+1 risks, and suggest eager loading"
+          },
+          {
+            "name": "migrate",
+            "description": "Generate safe, reversible ActiveRecord migration"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "railsforge.goToModel",
+        "title": "RailsForge: Go to Matching Model",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.goToController",
+        "title": "RailsForge: Go to Matching Controller",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.goToView",
+        "title": "RailsForge: Go to Matching View",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.goToSpec",
+        "title": "RailsForge: Go to Spec / Test",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.searchRoutes",
+        "title": "RailsForge: Search Rails Routes",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.rubocopAutocorrect",
+        "title": "RailsForge: RuboCop Autocorrect File",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.runBrakeman",
+        "title": "RailsForge: Run Brakeman Security Scan",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.extractService",
+        "title": "RailsForge: Extract Selection to Service Object",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.extractQuery",
+        "title": "RailsForge: Extract Selection to Query Object",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.showSchemaPeek",
+        "title": "RailsForge: Peek Model Schema",
+        "category": "RailsForge"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "railsforge.goToModel",
+        "key": "alt+r m",
+        "mac": "cmd+alt+r m",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.goToController",
+        "key": "alt+r c",
+        "mac": "cmd+alt+r c",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.goToView",
+        "key": "alt+r v",
+        "mac": "cmd+alt+r v",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.goToSpec",
+        "key": "alt+r s",
+        "mac": "cmd+alt+r s",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.searchRoutes",
+        "key": "alt+r r",
+        "mac": "cmd+alt+r r"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "@vscode/vsce": "^3.7.1",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.0.0",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
