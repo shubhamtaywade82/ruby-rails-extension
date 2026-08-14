@@ -1,7 +1,7 @@
 # RailsForge — Supercharged Ruby & Rails IDE
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shubhamtaywade82/railsforge/main/media/logo.png" alt="RailsForge Logo" width="128" height="128" onerror="this.style.display='none'"/>
+  <img src="media/icon.png" alt="RailsForge Logo" width="160" height="160" />
 </p>
 
 <p align="center">
