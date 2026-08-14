@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test/**
+src/**
+test/**
+.eslintrc.json
+tsconfig.json
+webpack.config.js
+vitest.config.ts
+pnpm-lock.yaml
+*.log
+.github/**
+PRD.md
