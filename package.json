@@ -175,6 +175,11 @@
     "views": {
       "railsforge-explorer": [
         {
+          "type": "webview",
+          "id": "railsforge.chatView",
+          "name": "RailsForge AI Assistant"
+        },
+        {
           "id": "railsforge.architectureView",
           "name": "Architecture & Health"
         },

@@ -37,6 +37,7 @@ import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
 import { RailsAgent } from './agent/RailsAgent'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
+import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
 
 export function activate(context: vscode.ExtensionContext): void {
   const schemaIndexer = new SchemaIndexer()
@@ -88,7 +89,18 @@ export function activate(context: vscode.ExtensionContext): void {
     env,
   )
 
-  // 1. Initial Indexing & Live Workspace Analysis
+  // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
+  const chatViewProvider = new RailsChatViewProvider(
+    context.extensionUri,
+    agent,
+    schemaIndexer,
+    routesIndexer,
+  )
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('railsforge.chatView', chatViewProvider),
+  )
+
+  // 2. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
     loadSchema(workspaceRoot, schemaIndexer)
     loadRoutes(workspaceRoot, routesIndexer)
@@ -98,7 +110,7 @@ export function activate(context: vscode.ExtensionContext): void {
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
   }
 
-  // 2. Activity Bar Tree Views
+  // 3. Activity Bar Tree Views
   const architectureTreeProvider = new RailsArchitectureTreeProvider(
     env,
     schemaIndexer,
