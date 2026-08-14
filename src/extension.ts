@@ -31,6 +31,7 @@ import { VersionDocsEngine } from './docs/VersionDocsEngine'
 import { FactoryBotResolver } from './testing/FactoryBotResolver'
 import { RailsArchitectureTreeProvider } from './views/RailsArchitectureTreeProvider'
 import { PatternCatalogTreeProvider } from './views/PatternCatalogTreeProvider'
+import { PatternDiagnosticsProvider } from './patterns/PatternDiagnosticsProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
@@ -48,6 +49,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const migrationDiagnostics = new MigrationDiagnostics()
   const deprecationLinter = new RailsDeprecationLinter()
   const principleLinter = new DesignPrincipleLinter()
+  const patternDiagnostics = new PatternDiagnosticsProvider()
   const docsEngine = new VersionDocsEngine()
   const factoryBotResolver = new FactoryBotResolver()
   const policyNavigator = new PolicyNavigator()
@@ -86,12 +88,13 @@ export function activate(context: vscode.ExtensionContext): void {
     env,
   )
 
-  // 1. Initial Indexing
+  // 1. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
     loadSchema(workspaceRoot, schemaIndexer)
     loadRoutes(workspaceRoot, routesIndexer)
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
+    patternDiagnostics.scanWorkspace()
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
   }
 
@@ -114,6 +117,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, migrationDiagnostics),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, deprecationLinter),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, principleLinter),
+    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, patternDiagnostics),
     vscode.languages.registerCompletionItemProvider(
       ['erb', 'html', 'ruby'],
       new StimulusCompletionProvider(stimulusIndexer),
@@ -126,21 +130,24 @@ export function activate(context: vscode.ExtensionContext): void {
     migrationDiagnostics,
     deprecationLinter,
     principleLinter,
+    patternDiagnostics,
     rubocopProvider,
   )
 
-  // 4. Document Watchers for Test Explorer, Migrations, Principles, Deprecations
+  // 4. Live Document Watchers for Diagnostics & Design Pattern Suggestions
   vscode.workspace.onDidOpenTextDocument(doc => {
     testExplorer.discoverTestsInDocument(doc)
     migrationDiagnostics.updateDiagnostics(doc)
     deprecationLinter.updateDiagnostics(doc, env)
     principleLinter.updateDiagnostics(doc)
+    patternDiagnostics.updateDiagnostics(doc)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
     migrationDiagnostics.updateDiagnostics(e.document)
     deprecationLinter.updateDiagnostics(e.document, env)
     principleLinter.updateDiagnostics(e.document)
+    patternDiagnostics.updateDiagnostics(e.document)
   }, null, context.subscriptions)
 
   // 4. Register Commands
@@ -156,6 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
     viewComponentResolver,
     turboFrameNavigator,
     refactoringMenu,
+    patternDiagnostics,
     serviceExtractor,
     queryExtractor,
   )
@@ -234,10 +242,15 @@ function registerCommands(
   viewComponentResolver: ViewComponentResolver,
   _turboFrameNavigator: TurboFrameNavigator,
   refactoringMenu: RefactoringMenuProvider,
+  patternDiagnostics: PatternDiagnosticsProvider,
   serviceExtractor: ServiceExtractor,
   queryExtractor: QueryExtractor,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.scanWorkspaceArchitecture', () => {
+      patternDiagnostics.scanWorkspace()
+      vscode.window.showInformationMessage('🔍 RailsForge: Live workspace architecture & pattern scan completed.')
+    }),
     vscode.commands.registerCommand('railsforge.refactorSelection', () => refactoringMenu.promptRefactoring()),
     vscode.commands.registerCommand('railsforge.goToModel', () => navigateCompanion(mvc, 'model')),
     vscode.commands.registerCommand('railsforge.goToController', () => navigateCompanion(mvc, 'controller')),

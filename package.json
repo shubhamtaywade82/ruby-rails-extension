@@ -186,6 +186,11 @@
     },
     "commands": [
       {
+        "command": "railsforge.scanWorkspaceArchitecture",
+        "title": "RailsForge: Scan Workspace for Patterns, Smells & Safety",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.refactorSelection",
         "title": "RailsForge: Refactor Selection (Design Patterns)",
         "category": "RailsForge"
