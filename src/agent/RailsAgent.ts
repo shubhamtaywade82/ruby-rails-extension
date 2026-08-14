@@ -4,6 +4,7 @@
 
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
+import { ProjectEnvironment } from '../environment/EnvironmentDetector'
 
 export interface RailsAgentConfig {
   ollamaHost: string
@@ -29,6 +30,7 @@ export class RailsAgent {
     private schemaIndexer: SchemaIndexer,
     private routesIndexer: RoutesIndexer,
     private config: RailsAgentConfig,
+    private env?: ProjectEnvironment,
   ) {}
 
   async run(prompt: string, context: RailsAgentContext): Promise<RailsAgentResult> {
@@ -87,10 +89,14 @@ export class RailsAgent {
   private buildSystemPrompt(context: RailsAgentContext): string {
     const tables = this.schemaIndexer.getAllTables().map(t => `${t.name} (${Array.from(t.columns.keys()).join(', ')})`)
     const routes = this.routesIndexer.getAllRoutes().slice(0, 30).map(r => `${r.verb} ${r.uriPattern} => ${r.controller}#${r.action}`)
+    const rubyVer = this.env?.rubyVersion ?? '3.3.0'
+    const railsVer = this.env?.railsVersion ?? '7.1.0'
 
     const parts: string[] = [
-      'You are RailsForge AI, an expert Ruby on Rails 7/8 engineering assistant.',
-      'Always produce clean, modern, idiomatic Ruby adhering to RuboCop-Rails standards.',
+      'You are RailsForge AI, a senior Ruby on Rails engineering assistant.',
+      `CRITICAL CONSTRAINT: The active project strictly uses Ruby ${rubyVer} and Rails ${railsVer}.`,
+      `Do NOT use or suggest features from newer Ruby or Rails versions. Only use standard library modules and gem APIs compatible with Ruby ${rubyVer} and Rails ${railsVer}.`,
+      'Always produce clean, modern, idiomatic code adhering to RuboCop-Rails standards.',
       'Follow SOLID principles, avoid fat controllers, extract business logic to Service Objects, and prevent N+1 queries.',
     ]
 

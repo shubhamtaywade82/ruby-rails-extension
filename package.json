@@ -44,7 +44,9 @@
     "lint:fix": "eslint src --ext ts --fix",
     "type-check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "vsce-package": "vsce package --no-dependencies --allow-missing-repository -o railsforge.vsix"
+    "vsce-package": "vsce package --no-dependencies --allow-missing-repository -o railsforge.vsix",
+    "package": "pnpm run lint && pnpm run type-check && pnpm run compile && pnpm test && pnpm run vsce-package",
+    "build:all": "pnpm run package"
   },
   "contributes": {
     "languages": [
@@ -160,7 +162,33 @@
         ]
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "railsforge-explorer",
+          "title": "RailsForge",
+          "icon": "$(ruby)"
+        }
+      ]
+    },
+    "views": {
+      "railsforge-explorer": [
+        {
+          "id": "railsforge.architectureView",
+          "name": "Architecture & Health"
+        },
+        {
+          "id": "railsforge.patternCatalogView",
+          "name": "Design Patterns (Refactoring Guru)"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "railsforge.refactorSelection",
+        "title": "RailsForge: Refactor Selection (Design Patterns)",
+        "category": "RailsForge"
+      },
       {
         "command": "railsforge.goToModel",
         "title": "RailsForge: Go to Matching Model",

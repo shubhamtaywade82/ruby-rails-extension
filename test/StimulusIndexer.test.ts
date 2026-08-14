@@ -1,0 +1,47 @@
+import { describe, it, expect } from 'vitest'
+import { StimulusIndexer } from '../src/hotwire/StimulusIndexer'
+
+describe('StimulusIndexer', () => {
+  const indexer = new StimulusIndexer()
+
+  it('parses Stimulus controller targets, actions, and values', () => {
+    const code = `
+import { Controller } from "@hotwired/stimulus"
+
+export default class extends Controller {
+  static targets = [ "source", "output" ]
+  static values = { url: String, interval: Number }
+
+  connect() {
+    console.log("connected")
+  }
+
+  copy(event) {
+    event.preventDefault()
+  }
+
+  toggle() {
+    this.outputTarget.classList.toggle("hidden")
+  }
+}
+`
+    const def = indexer.parseControllerCode('/app/javascript/controllers/clipboard_controller.js', code)
+
+    expect(def.identifier).toBe('clipboard')
+    expect(def.targets).toEqual(['source', 'output'])
+    expect(def.values).toEqual(['url', 'interval'])
+    expect(def.actions).toContain('copy')
+    expect(def.actions).toContain('toggle')
+    expect(def.actions).not.toContain('connect')
+  })
+
+  it('handles nested folder names in identifier', () => {
+    const code = `
+export default class extends Controller {
+  static targets = [ "menu" ]
+}
+`
+    const def = indexer.parseControllerCode('/app/javascript/controllers/nested/dropdown_menu_controller.js', code)
+    expect(def.identifier).toBe('nested--dropdown-menu')
+  })
+})

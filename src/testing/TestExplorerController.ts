@@ -1,0 +1,95 @@
+/**
+ * TestExplorerController - VS Code Native Test Explorer API Integration
+ */
+
+import * as vscode from 'vscode'
+import { exec } from 'child_process'
+
+export class TestExplorerController {
+  private testController: vscode.TestController
+
+  constructor() {
+    this.testController = vscode.tests.createTestController('railsforge.tests', 'RailsForge Tests')
+    this.testController.createRunProfile(
+      'Run',
+      vscode.TestRunProfileKind.Run,
+      (request, token) => this.runHandler(request, token),
+      true,
+    )
+  }
+
+  getController(): vscode.TestController {
+    return this.testController
+  }
+
+  discoverTestsInDocument(document: vscode.TextDocument): void {
+    if (!document.fileName.endsWith('_spec.rb') && !document.fileName.endsWith('_test.rb')) {
+      return
+    }
+
+    const fileTest = this.testController.createTestItem(
+      document.uri.toString(),
+      vscode.workspace.asRelativePath(document.uri),
+      document.uri,
+    )
+
+    const lines = document.getText().split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      const match = /^\s*(?:it|scenario|specify|test)\s+["']([^"']+)["']/.exec(line)
+      if (match) {
+        const item = this.testController.createTestItem(
+          `${document.uri.toString()}:${i + 1}`,
+          match[1],
+          document.uri,
+        )
+        item.range = new vscode.Range(i, 0, i, line.length)
+        fileTest.children.add(item)
+      }
+    }
+
+    this.testController.items.add(fileTest)
+  }
+
+  private runHandler(request: vscode.TestRunRequest, token: vscode.CancellationToken): void {
+    const run = this.testController.createTestRun(request)
+    const queue: vscode.TestItem[] = []
+
+    if (request.include) {
+      queue.push(...request.include)
+    } else {
+      this.testController.items.forEach(item => queue.push(item))
+    }
+
+    for (const test of queue) {
+      if (token.isCancellationRequested) {break}
+      run.started(test)
+
+      const cmd = this.buildTestCommand(test)
+      exec(cmd, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath }, (error, stdout, stderr) => {
+        if (error) {
+          run.failed(test, new vscode.TestMessage(stderr || stdout || error.message))
+        } else {
+          run.passed(test)
+        }
+      })
+    }
+
+    run.end()
+  }
+
+  private buildTestCommand(item: vscode.TestItem): string {
+    const uri = item.uri?.fsPath ?? ''
+    const isRSpec = uri.includes('/spec/')
+    const line = item.range ? `:${item.range.start.line + 1}` : ''
+
+    if (isRSpec) {
+      return `bundle exec rspec "${uri}${line}"`
+    }
+    return `bundle exec rails test "${uri}${line}"`
+  }
+
+  dispose(): void {
+    this.testController.dispose()
+  }
+}
