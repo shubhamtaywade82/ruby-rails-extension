@@ -10,7 +10,8 @@
     "url": "https://github.com/shubhamtaywade82/railsforge"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=20"
   },
   "categories": [
     "Programming Languages",
