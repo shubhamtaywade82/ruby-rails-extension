@@ -192,6 +192,21 @@
     },
     "commands": [
       {
+        "command": "railsforge.exportCursorRules",
+        "title": "RailsForge: Export Cursor Rules & Register MCP Server",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.showDependencyCycles",
+        "title": "RailsForge: Show Circular Dependencies",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.findDuplicateMethods",
+        "title": "RailsForge: Find Near-Duplicate Methods (DRY)",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.fixAllInFile",
         "title": "RailsForge: Fix All Deterministic Principle Violations in File",
         "category": "RailsForge"
@@ -325,11 +340,19 @@
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "@vscode/vsce": "^3.7.1",
+    "copy-webpack-plugin": "^14.0.0",
     "eslint": "^8.56.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.7.3",
     "vitest": "^2.0.0",
     "webpack": "^5.91.0",
     "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.0.3",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-ruby": "^0.23.1",
+    "zod": "^4.4.3"
   }
 }

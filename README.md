@@ -240,14 +240,46 @@ association-aware navigation are natural next steps on the same scaffold).
 
 ## Roadmap
 
-The pattern catalog, principle diagnostics, and `ruby-lsp` add-on above are the
-first slice of a larger "architectural guardrail" direction: project-wide
-semantic search, a dependency/collaborator graph for services, guided
-"Extract Service/Query with caller updates" refactors, and an MCP server so
-any AI client (not just the built-in `@rails` agent) can query RailsForge's
-index. These are tracked in [`PRD.md`](./PRD.md) and are a deliberately
-bigger lift (native indexing, AST parsing) than the current regex/heuristic
-approach — happy to scope any one of them as a follow-up.
+The pattern catalog and principle diagnostics above started as a regex/heuristic
+layer, deliberately kept dependency-light. That layer is now complemented by a
+**persistent AST index** (tree-sitter + SQLite, off the extension host thread —
+see "AST-Backed Analysis" above) that powers cross-file DRY detection, dependency
+cycle detection, guided multi-file extraction, and an MCP server. Remaining
+roadmap items are tracked in [`PRD.md`](./PRD.md); happy to scope any of them as
+a follow-up.
+
+### 🧬 16. AST-Backed Analysis (tree-sitter + SQLite, off-thread)
+
+A second, complementary index alongside the regex-based one above — built with
+real Ruby parsing (`tree-sitter-ruby`) and persisted to a workspace-local
+`.railsforge/index.sqlite3` (gitignore it, like any other local cache) so it
+survives VS Code restarts instead of rebuilding from scratch. Indexing runs in
+a `worker_threads` worker, never on the extension host's own thread. Fails
+soft: if the native modules can't load on some platform, these features
+silently disable themselves — nothing else in RailsForge is affected.
+
+- **`RailsForge: Find Near-Duplicate Methods (DRY)`** — near-duplicate method
+  *bodies* across the whole codebase (not just line-count heuristics), ranked
+  by token-overlap similarity. Two methods with the same logic under different
+  names/variables in different files are still flagged.
+- **`RailsForge: Show Circular Dependencies`** — DFS cycle detection (A → B →
+  C → A) over an AST-derived dependency graph that also understands
+  `include`/`prepend`/`extend`, not just `.call`/`.new`.
+- **Guided Extract Service/Query**: `railsforge.extractService` and
+  `railsforge.extractQuery` now also (a) search the workspace for other exact
+  copies of the selected code and offer to replace them too in the same
+  multi-file edit, and (b) generate a companion RSpec skeleton at
+  `spec/services/*_spec.rb` (or `spec/queries/`) when a `spec/` directory
+  exists, so extraction doesn't leave zero test coverage behind.
+- **`RailsForge: Export Cursor Rules & Register MCP Server`** — writes
+  `.cursor/rules/railsforge.mdc` (schema, routes, existing patterns, the
+  "search before generating" rule) and registers the `railsforge` MCP server
+  in `.cursor/mcp.json`.
+- **MCP server** (`dist/mcp/server.js`, standalone — not loaded by the
+  extension host) exposes `get_schema`, `list_routes`, `list_patterns`,
+  `find_similar_pattern`, `get_dependencies`, and `find_duplicate_methods` as
+  MCP tools, so any MCP-capable AI client can query the same project context
+  the built-in `@rails` agent uses — not just Cursor/Claude Code.
 
 ---
 
@@ -256,6 +288,7 @@ approach — happy to scope any one of them as a follow-up.
 - Ruby $\ge 2.7$ & Rails $\ge 5.2$
 - Bundler (`Gemfile` / `Gemfile.lock`)
 - *(Optional)* [Ollama](https://ollama.ai/) running locally on `http://localhost:11434` for `@rails` AI assistant features (`ollama run qwen2.5-coder:14b` or `qwen2.5-coder:7b`).
+- The AST-Backed Analysis features (§16) bundle native modules (`better-sqlite3`, `tree-sitter-ruby`) with prebuilt binaries for macOS/Linux/Windows on x64 and arm64. If your platform isn't covered, those specific features disable themselves — everything else in RailsForge is unaffected.
 
 ---
 

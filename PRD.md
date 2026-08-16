@@ -258,22 +258,75 @@ we do this before."
   Rails-specific quick fix) instead of being silently scoped to `app/models`
   and `app/controllers` only.
 
-**Not yet implemented — sized for separate follow-up work, roughly in this
-order:**
+**Also shipped: Phases 8, 11, 12, 13, 14 (AST-backed analysis, `src/indexer/`, `src/mcp/`).**
+The user explicitly signed off on the Phase 12 native-dependency tradeoff (asked
+directly, chose "add better-sqlite3 + tree-sitter-ruby, worker thread, persistent
+SQLite cache"), which unblocked 8/11/13/14 doing real AST analysis instead of
+line regex. This is a *second, complementary* index alongside the original
+regex-based `ProjectPatternIndexer`/`MinimalDependencyGraph`/`DesignPrincipleLinter`
+— those are untouched and still the fallback if the native modules fail to load
+on some platform (`PersistentIndexManager.activate()` catches that case and
+returns `null`; every command checks for `null` and reports "still starting up /
+unavailable" rather than crashing).
+
+- `RubyAstParser` (`src/indexer/`) wraps `tree-sitter`/`tree-sitter-ruby`:
+  extracts classes, superclass, `include`/`prepend`/`extend`, public/private
+  methods (with full body text and constructor params), and calls (with
+  receiver) from real parse trees.
+- `database.ts` + `PersistentIndexer.ts`: SQLite schema (`symbols`, `methods`,
+  `dependencies`, `embeddings` tables) and the upsert logic, unit-tested
+  directly against `:memory:` — no worker thread needed for the tests.
+  Content-hash based, so unchanged files are skipped on re-index.
+- `indexer.worker.ts` + `PersistentIndexClient.ts`: the actual worker thread
+  (parsing + SQLite writes happen off the extension host) and its main-thread
+  handle. A `ready` handshake avoids the main thread opening its read-only
+  connection before the worker has created the DB file. The DB lives at a
+  **workspace-local** `.railsforge/index.sqlite3` (not VS Code's opaque
+  per-workspace global storage) specifically so the standalone MCP server can
+  find it without reconstructing VS Code's storage-path hashing.
+- **Phase 8** — `DuplicateMethodDetector`: Jaccard token-overlap similarity
+  over the `methods` table's normalized bodies, cross-file, not just
+  within-file line-count heuristics. `railsforge.findDuplicateMethods`.
+- **Phase 11** — `PersistentDependencyGraph`: DFS cycle detection over
+  AST-derived edges (now including `include`/`prepend`/`extend`, not only
+  `.call`/`.new`), plus `getCallers`/`getCollaborators`.
+  `railsforge.showDependencyCycles`.
+- **Phase 13** — `DuplicateCallSiteFinder` + `SpecFileGenerator`: `extractService`/
+  `extractQuery` now search for exact duplicates of the selected code elsewhere
+  in the workspace and offer to replace them too (one multi-file `WorkspaceEdit`),
+  and generate a companion RSpec skeleton under `spec/services|queries/` when a
+  `spec/` directory exists.
+- **Phase 14** — `src/mcp/server.ts` (standalone Node process, own webpack
+  entry, started by an MCP client — not loaded by the extension host) exposes
+  `get_schema`, `list_routes`, `list_patterns`, `find_similar_pattern`,
+  `get_dependencies`, `find_duplicate_methods` as MCP tools using
+  `@modelcontextprotocol/sdk` (pure JS, no native/packaging concerns). Reuses
+  `SchemaIndexer`/`RoutesIndexer`/`ProjectPatternIndexer` directly since none
+  of them import `vscode`. `CursorRulesGenerator.ts` builds
+  `.cursor/rules/railsforge.mdc`; `railsforge.exportCursorRules` writes it and
+  merge-registers the MCP server into `.cursor/mcp.json` without clobbering
+  any other servers already configured there.
+
+**Packaging**: `better-sqlite3`/`tree-sitter`/`tree-sitter-ruby` are N-API
+based with prebuilt binaries for macOS/Linux/Windows × x64/arm64 — verified
+these load correctly both in a plain Node process and when required from the
+packaged `dist/` layout (no Electron-specific rebuild needed, since N-API is
+ABI-stable). Webpack externalizes them and a `CopyWebpackPlugin` config copies
+only the runtime-necessary files (prebuilds + JS glue, not the C/C++ source
+trees used solely for compiling from scratch — that cut ~60MB down to ~30MB
+uncompressed) into `dist/node_modules/`, dereferencing pnpm's symlinks (`vsce`'s
+default dependency-pruning shells out to `npm ls`, which chokes on pnpm's
+node_modules layout — confirmed by testing it directly). Verified end-to-end:
+`vsce package --no-dependencies` produces a working ~11MB `.vsix` with `dist/`
+containing `extension.js`, `indexer/indexer.worker.js`, `mcp/server.js`, and
+`node_modules/` for the three native packages; smoke-tested the worker
+(index → SQLite write → read back from a separate connection) and the MCP
+server (spawned via stdio, `tools/list` + `tools/call` round-trips) directly
+against the compiled `dist/` output, not just the TypeScript sources.
+
+**Still not implemented:**
 
 | Phase | Feature | Why it's separate | Key infra decision |
 | :--- | :--- | :--- | :--- |
-| 8 | Principle diagnostics engine (expand DRY beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
-| 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
-| 11 | Cycle detection + richer dependency graph (currently: hard-coded-collaborator + caller lookups only, regex-based) | `MinimalDependencyGraph` shipped this iteration; cycle detection and multi-hop analysis want real AST parsing (constructor params, `include`, nested calls) for reliability at scale | Requires an AST library decision |
-| 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |
-| 13 | Guided "Extract Service/Query" that also updates all callers across files + generates a matching spec | Current Extract Service only replaces the local selection; updating callers elsewhere needs the caller index from Phase 11 to be reliable | Builds on 11/12 |
-| 14 | MCP server exposing the semantic index + `.cursor/rules` export | Depends on the index existing (10-12) | New process/protocol surface |
-| 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of the above; can be picked up any time | None |
-
-Phase 12 is called out specifically because `better-sqlite3`/`tree-sitter-ruby`
-are native Node modules — bundling them into a VS Code `.vsix` requires
-per-platform prebuilds and changes the current pure-JS/TS webpack build. That
-tradeoff (index scalability vs. packaging complexity) should be an explicit
-decision, not an incidental side effect of adding search or a dependency
-graph.
+| 10 | Semantic code search ("find where we charge a card") | Shipped independently on `claude/semantic-code-search` (PR pending merge at time of writing) using Ollama embeddings, not part of this AST/SQLite index | N/A — already resolved on that branch |
+| 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of everything above; can be picked up any time | None |
