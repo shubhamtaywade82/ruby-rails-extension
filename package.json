@@ -202,6 +202,11 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.showRelatedFiles",
+        "title": "RailsForge: Show Related Files (Services, Queries, Policies, Specs)",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.scanWorkspaceArchitecture",
         "title": "RailsForge: Scan Workspace for Patterns, Smells & Safety",
         "category": "RailsForge"

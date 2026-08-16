@@ -235,6 +235,15 @@ we do this before."
   "Inject `X` via constructor" Quick Fix that adds a keyword constructor
   param and rewrites call sites in that file to use it, and answers
   "who calls this service" (`getCallers`).
+- `RelatedFilesIndex` (`src/graph/`) — reverse index from a model name to the
+  services/queries/policies/decorators/concerns that reference it (by name
+  match or `Model.find`/`.create`/`.where`-style usage in the body), plus a
+  spec/test index keyed by `RSpec.describe`/Minitest `class XTest` subject.
+  `RelatedCodeLensProvider` renders `🔗 3 Services · 2 Queries · 1 Policy · 6 Specs`
+  on models and `🔗 Called by 7 · Depends on 3 · 2 Specs` on services/queries/
+  policies (reusing `MinimalDependencyGraph`); `RelatedHoverProvider` shows the
+  same on hover of the `class` line; `railsforge.showRelatedFiles` opens a
+  quick-pick to jump straight to any of them. This is Phase 9 below, done.
 
 **Not yet implemented — sized for separate follow-up work, roughly in this
 order:**
@@ -242,7 +251,6 @@ order:**
 | Phase | Feature | Why it's separate | Key infra decision |
 | :--- | :--- | :--- | :--- |
 | 8 | Principle diagnostics engine (expand DRY beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
-| 9 | Cross-file "Related" CodeLens + richer hover (model → services/queries/policies/specs count) | Needs a reverse index (model → dependents), not just forward classification | None — extends current indexers |
 | 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
 | 11 | Cycle detection + richer dependency graph (currently: hard-coded-collaborator + caller lookups only, regex-based) | `MinimalDependencyGraph` shipped this iteration; cycle detection and multi-hop analysis want real AST parsing (constructor params, `include`, nested calls) for reliability at scale | Requires an AST library decision |
 | 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |

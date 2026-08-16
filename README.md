@@ -103,6 +103,21 @@ concerns as you work:
 - Feeds directly into the `@rails` agent's grounding (below), so generated code is
   steered toward your existing patterns instead of reinventing them.
 
+### 🔗 13. Cross-File "Related Files" CodeLens & Hover
+
+Stops the "open 5-6 files to understand this class" loop:
+
+- **On a model** (`app/models/*.rb`): CodeLens above the class shows
+  `🔗 3 Services · 2 Queries · 1 Policy · 6 Specs` — every indexed pattern that
+  references the model by name or by `Model.find`/`.create`/`.where`-style usage,
+  plus its RSpec/Minitest spec count.
+- **On a service/query/policy/decorator**: CodeLens shows `🔗 Called by 7 · Depends on 3 · 2 Specs`,
+  sourced from the same collaborator graph the "Inject via constructor" Quick Fix uses (§6).
+- **Hover** the `class` definition line for the same information inline, without a click.
+- **`RailsForge: Show Related Files`** opens a quick-pick of everything found — services,
+  queries, policies, callers, collaborators, and specs — each jumping straight to the
+  right line.
+
 ### 🤖 11. Grounded Local AI Agent (`@rails`)
 
 Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):

@@ -36,6 +36,9 @@ import { ProjectPatternIndexer } from './patterns/ProjectPatternIndexer'
 import { PatternCodeLensProvider } from './patterns/PatternCodeLensProvider'
 import { MinimalDependencyGraph } from './graph/MinimalDependencyGraph'
 import { DependencyDiagnosticsProvider } from './graph/DependencyDiagnosticsProvider'
+import { RelatedFilesIndex } from './graph/RelatedFilesIndex'
+import { RelatedCodeLensProvider } from './graph/RelatedCodeLensProvider'
+import { RelatedHoverProvider } from './graph/RelatedHoverProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
@@ -59,6 +62,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const patternCodeLensProvider = new PatternCodeLensProvider(projectPatternIndexer)
   const dependencyGraph = new MinimalDependencyGraph(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
   const dependencyDiagnostics = new DependencyDiagnosticsProvider(dependencyGraph, projectPatternIndexer)
+  const relatedFilesIndex = new RelatedFilesIndex(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const relatedCodeLensProvider = new RelatedCodeLensProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
+  const relatedHoverProvider = new RelatedHoverProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
   const docsEngine = new VersionDocsEngine()
   const factoryBotResolver = new FactoryBotResolver()
   const policyNavigator = new PolicyNavigator()
@@ -116,9 +122,11 @@ export function activate(context: vscode.ExtensionContext): void {
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
     patternDiagnostics.scanWorkspace()
-    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics)
+    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
-    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics)
+    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
   }
 
   // 3. Activity Bar Tree Views
@@ -155,6 +163,8 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
+    vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, relatedCodeLensProvider),
+    vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, relatedHoverProvider),
     testExplorer.getController(),
     migrationDiagnostics,
     deprecationLinter,
@@ -201,6 +211,8 @@ export function activate(context: vscode.ExtensionContext): void {
     projectPatternIndexer,
     agent,
     principleLinter,
+    relatedFilesIndex,
+    dependencyGraph,
   )
 
   // 5. Register Chat Participant
@@ -262,6 +274,7 @@ async function loadProjectPatterns(
   codeLensProvider: PatternCodeLensProvider,
   dependencyGraph: MinimalDependencyGraph,
   dependencyDiagnostics: DependencyDiagnosticsProvider,
+  relatedCodeLensProvider: RelatedCodeLensProvider,
 ): Promise<void> {
   const globs = [
     'app/services/**/*.rb',
@@ -283,6 +296,38 @@ async function loadProjectPatterns(
   codeLensProvider.refresh()
   dependencyGraph.rebuild()
   refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+  relatedCodeLensProvider.refresh()
+}
+
+async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): Promise<void> {
+  const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', '**/node_modules/**')
+  for (const file of files) {
+    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+  const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', '**/node_modules/**')
+  for (const file of testFiles) {
+    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+  relatedCodeLensProvider.refresh()
+}
+
+function watchSpecFiles(context: vscode.ExtensionContext, relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/{spec/**/*_spec.rb,test/**/*_test.rb}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      relatedFilesIndex.indexSpecFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      relatedFilesIndex.removeSpecFile(uri.fsPath)
+    }
+    relatedCodeLensProvider.refresh()
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => {
+    relatedFilesIndex.removeSpecFile(uri.fsPath)
+    relatedCodeLensProvider.refresh()
+  })
+  context.subscriptions.push(watcher)
 }
 
 function watchPatternFiles(
@@ -291,6 +336,7 @@ function watchPatternFiles(
   codeLensProvider: PatternCodeLensProvider,
   dependencyGraph: MinimalDependencyGraph,
   dependencyDiagnostics: DependencyDiagnosticsProvider,
+  relatedCodeLensProvider: RelatedCodeLensProvider,
 ): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/app/{services,queries,forms,policies,decorators,models/concerns,controllers/concerns}/**/*.rb',
@@ -304,6 +350,7 @@ function watchPatternFiles(
     codeLensProvider.refresh()
     dependencyGraph.rebuild()
     refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+    relatedCodeLensProvider.refresh()
   }
   watcher.onDidChange(reindex)
   watcher.onDidCreate(reindex)
@@ -312,6 +359,7 @@ function watchPatternFiles(
     codeLensProvider.refresh()
     dependencyGraph.rebuild()
     refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+    relatedCodeLensProvider.refresh()
   })
   context.subscriptions.push(watcher)
 }
@@ -378,6 +426,8 @@ function registerCommands(
   projectPatternIndexer: ProjectPatternIndexer,
   agent: RailsAgent,
   principleLinter: DesignPrincipleLinter,
+  relatedFilesIndex: RelatedFilesIndex,
+  dependencyGraph: MinimalDependencyGraph,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
@@ -450,6 +500,48 @@ function registerCommands(
         const doc = await vscode.workspace.openTextDocument(selected.pattern.filePath)
         const editor = await vscode.window.showTextDocument(doc)
         const pos = new vscode.Position(Math.max(0, selected.pattern.lineStart - 1), 0)
+        editor.selection = new vscode.Selection(pos, pos)
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
+      }
+    }),
+    vscode.commands.registerCommand('railsforge.showRelatedFiles', async (name: string) => {
+      const items: Array<{ label: string; description: string; filePath: string; line?: number }> = []
+
+      const relations = relatedFilesIndex.getModelRelations(name)
+      for (const [type, list] of Object.entries(relations.patternsByType)) {
+        for (const p of list ?? []) {
+          items.push({ label: `$(symbol-class) ${p.name}`, description: type, filePath: p.filePath, line: p.lineStart })
+        }
+      }
+
+      for (const edge of dependencyGraph.getCollaborators(name)) {
+        const collaborator = projectPatternIndexer.getAllPatterns().find(p => p.name === edge.to)
+        if (collaborator) {
+          items.push({ label: `$(arrow-right) ${edge.to}`, description: 'depends on', filePath: collaborator.filePath, line: collaborator.lineStart })
+        }
+      }
+      for (const edge of dependencyGraph.getCallers(name)) {
+        const caller = projectPatternIndexer.getAllPatterns().find(p => p.name === edge.from)
+        if (caller) {
+          items.push({ label: `$(arrow-left) ${edge.from}`, description: 'called by', filePath: caller.filePath, line: caller.lineStart })
+        }
+      }
+      for (const specPath of relatedFilesIndex.getSpecFiles(name)) {
+        items.push({ label: `$(beaker) ${vscode.workspace.asRelativePath(specPath)}`, description: 'spec', filePath: specPath })
+      }
+
+      if (items.length === 0) {
+        vscode.window.showInformationMessage(`RailsForge: No related files indexed for ${name}.`)
+        return
+      }
+
+      const selected = await vscode.window.showQuickPick(items, { placeHolder: `Files related to ${name}` })
+      if (!selected) {return}
+
+      const doc = await vscode.workspace.openTextDocument(selected.filePath)
+      const editor = await vscode.window.showTextDocument(doc)
+      if (selected.line) {
+        const pos = new vscode.Position(Math.max(0, selected.line - 1), 0)
         editor.selection = new vscode.Selection(pos, pos)
         editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
       }
