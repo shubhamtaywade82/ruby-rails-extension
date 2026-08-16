@@ -32,6 +32,13 @@ import { FactoryBotResolver } from './testing/FactoryBotResolver'
 import { RailsArchitectureTreeProvider } from './views/RailsArchitectureTreeProvider'
 import { PatternCatalogTreeProvider } from './views/PatternCatalogTreeProvider'
 import { PatternDiagnosticsProvider } from './patterns/PatternDiagnosticsProvider'
+import { ProjectPatternIndexer } from './patterns/ProjectPatternIndexer'
+import { PatternCodeLensProvider } from './patterns/PatternCodeLensProvider'
+import { MinimalDependencyGraph } from './graph/MinimalDependencyGraph'
+import { DependencyDiagnosticsProvider } from './graph/DependencyDiagnosticsProvider'
+import { RelatedFilesIndex } from './graph/RelatedFilesIndex'
+import { RelatedCodeLensProvider } from './graph/RelatedCodeLensProvider'
+import { RelatedHoverProvider } from './graph/RelatedHoverProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
@@ -51,6 +58,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const deprecationLinter = new RailsDeprecationLinter()
   const principleLinter = new DesignPrincipleLinter()
   const patternDiagnostics = new PatternDiagnosticsProvider()
+  const projectPatternIndexer = new ProjectPatternIndexer()
+  const patternCodeLensProvider = new PatternCodeLensProvider(projectPatternIndexer)
+  const dependencyGraph = new MinimalDependencyGraph(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const dependencyDiagnostics = new DependencyDiagnosticsProvider(dependencyGraph, projectPatternIndexer)
+  const relatedFilesIndex = new RelatedFilesIndex(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const relatedCodeLensProvider = new RelatedCodeLensProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
+  const relatedHoverProvider = new RelatedHoverProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
   const docsEngine = new VersionDocsEngine()
   const factoryBotResolver = new FactoryBotResolver()
   const policyNavigator = new PolicyNavigator()
@@ -87,6 +101,7 @@ export function activate(context: vscode.ExtensionContext): void {
       model: config.get<string>('ollama.model', 'qwen2.5-coder:14b'),
     },
     env,
+    projectPatternIndexer,
   )
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
@@ -107,7 +122,11 @@ export function activate(context: vscode.ExtensionContext): void {
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
     patternDiagnostics.scanWorkspace()
+    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
+    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
   }
 
   // 3. Activity Bar Tree Views
@@ -128,8 +147,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, rubocopProvider),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, migrationDiagnostics),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, deprecationLinter),
-    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, principleLinter),
+    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, principleLinter, {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorExtract],
+    }),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, patternDiagnostics),
+    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, dependencyDiagnostics, {
+      providedCodeActionKinds: [vscode.CodeActionKind.Refactor],
+    }),
     vscode.languages.registerCompletionItemProvider(
       ['erb', 'html', 'ruby'],
       new StimulusCompletionProvider(stimulusIndexer),
@@ -138,11 +162,15 @@ export function activate(context: vscode.ExtensionContext): void {
       '=',
     ),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
+    vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
+    vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, relatedCodeLensProvider),
+    vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, relatedHoverProvider),
     testExplorer.getController(),
     migrationDiagnostics,
     deprecationLinter,
     principleLinter,
     patternDiagnostics,
+    dependencyDiagnostics,
     rubocopProvider,
   )
 
@@ -153,6 +181,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deprecationLinter.updateDiagnostics(doc, env)
     principleLinter.updateDiagnostics(doc)
     patternDiagnostics.updateDiagnostics(doc)
+    dependencyDiagnostics.updateDiagnostics(doc)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
@@ -160,6 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deprecationLinter.updateDiagnostics(e.document, env)
     principleLinter.updateDiagnostics(e.document)
     patternDiagnostics.updateDiagnostics(e.document)
+    dependencyDiagnostics.updateDiagnostics(e.document)
   }, null, context.subscriptions)
 
   // 4. Register Commands
@@ -178,10 +208,20 @@ export function activate(context: vscode.ExtensionContext): void {
     patternDiagnostics,
     serviceExtractor,
     queryExtractor,
+    projectPatternIndexer,
+    agent,
+    principleLinter,
+    relatedFilesIndex,
+    dependencyGraph,
   )
 
   // 5. Register Chat Participant
   RailsChatParticipant.getInstance().register(context, agent, schemaIndexer, routesIndexer)
+
+  // 6. Suggest the ruby-lsp add-on when ruby-lsp is present but the gem isn't
+  if (workspaceRoot) {
+    void suggestRubyLspAddon(context, workspaceRoot)
+  }
 
   // 6. Status Bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
@@ -189,6 +229,31 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.tooltip = 'RailsForge: Active'
   statusBar.show()
   context.subscriptions.push(statusBar)
+}
+
+async function suggestRubyLspAddon(context: vscode.ExtensionContext, root: string): Promise<void> {
+  const dismissedKey = 'railsforge.dismissedRubyLspAddonSuggestion'
+  if (context.globalState.get<boolean>(dismissedKey)) {return}
+
+  const rubyLspInstalled = Boolean(vscode.extensions.getExtension('Shopify.ruby-lsp'))
+  if (!rubyLspInstalled) {return}
+
+  const lockPath = path.join(root, 'Gemfile.lock')
+  if (!fs.existsSync(lockPath)) {return}
+  const lock = fs.readFileSync(lockPath, 'utf8')
+  if (!lock.includes(' ruby-lsp ') || lock.includes('railsforge-ruby-lsp')) {return}
+
+  const choice = await vscode.window.showInformationMessage(
+    'RailsForge can add schema-aware hover directly into ruby-lsp via a small companion gem (railsforge-ruby-lsp). Add it to your Gemfile?',
+    'Show Instructions',
+    "Don't show again",
+  )
+  if (choice === 'Show Instructions') {
+    void vscode.env.openExternal(vscode.Uri.parse('https://github.com/shubhamtaywade82/railsforge/tree/main/ruby-lsp-addon'))
+  }
+  if (choice) {
+    void context.globalState.update(dismissedKey, true)
+  }
 }
 
 function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
@@ -204,6 +269,109 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
     }
   }
 }
+async function loadProjectPatterns(
+  indexer: ProjectPatternIndexer,
+  codeLensProvider: PatternCodeLensProvider,
+  dependencyGraph: MinimalDependencyGraph,
+  dependencyDiagnostics: DependencyDiagnosticsProvider,
+  relatedCodeLensProvider: RelatedCodeLensProvider,
+): Promise<void> {
+  // Matches both app/services/**/*.rb (Rails) and lib/**/services/**/*.rb (a gem/script
+  // with no app/ directory), since ProjectPatternIndexer.classifyPath now matches the
+  // directory name anywhere in the path.
+  const globs = [
+    '{app,lib}/**/services/**/*.rb',
+    '{app,lib}/**/queries/**/*.rb',
+    '{app,lib}/**/forms/**/*.rb',
+    '{app,lib}/**/policies/**/*.rb',
+    '{app,lib}/**/decorators/**/*.rb',
+    '{app,lib}/**/concerns/**/*.rb',
+  ]
+
+  for (const glob of globs) {
+    const files = await vscode.workspace.findFiles(glob, '**/node_modules/**')
+    for (const file of files) {
+      const content = fs.readFileSync(file.fsPath, 'utf8')
+      indexer.indexFile(file.fsPath, content)
+    }
+  }
+  codeLensProvider.refresh()
+  dependencyGraph.rebuild()
+  refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+  relatedCodeLensProvider.refresh()
+}
+
+async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): Promise<void> {
+  const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', '**/node_modules/**')
+  for (const file of files) {
+    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+  const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', '**/node_modules/**')
+  for (const file of testFiles) {
+    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+  relatedCodeLensProvider.refresh()
+}
+
+function watchSpecFiles(context: vscode.ExtensionContext, relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/{spec/**/*_spec.rb,test/**/*_test.rb}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      relatedFilesIndex.indexSpecFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      relatedFilesIndex.removeSpecFile(uri.fsPath)
+    }
+    relatedCodeLensProvider.refresh()
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => {
+    relatedFilesIndex.removeSpecFile(uri.fsPath)
+    relatedCodeLensProvider.refresh()
+  })
+  context.subscriptions.push(watcher)
+}
+
+function watchPatternFiles(
+  context: vscode.ExtensionContext,
+  indexer: ProjectPatternIndexer,
+  codeLensProvider: PatternCodeLensProvider,
+  dependencyGraph: MinimalDependencyGraph,
+  dependencyDiagnostics: DependencyDiagnosticsProvider,
+  relatedCodeLensProvider: RelatedCodeLensProvider,
+): void {
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
+  )
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      indexer.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      indexer.removeFile(uri.fsPath)
+    }
+    codeLensProvider.refresh()
+    dependencyGraph.rebuild()
+    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+    relatedCodeLensProvider.refresh()
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => {
+    indexer.removeFile(uri.fsPath)
+    codeLensProvider.refresh()
+    dependencyGraph.rebuild()
+    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+    relatedCodeLensProvider.refresh()
+  })
+  context.subscriptions.push(watcher)
+}
+
+function refreshOpenDependencyDiagnostics(dependencyDiagnostics: DependencyDiagnosticsProvider): void {
+  for (const doc of vscode.workspace.textDocuments) {
+    dependencyDiagnostics.updateDiagnostics(doc)
+  }
+}
+
 function loadSchema(root: string, indexer: SchemaIndexer): void {
   const schemaPath = path.join(root, 'db', 'schema.rb')
   if (fs.existsSync(schemaPath)) {
@@ -257,8 +425,129 @@ function registerCommands(
   patternDiagnostics: PatternDiagnosticsProvider,
   serviceExtractor: ServiceExtractor,
   queryExtractor: QueryExtractor,
+  projectPatternIndexer: ProjectPatternIndexer,
+  agent: RailsAgent,
+  principleLinter: DesignPrincipleLinter,
+  relatedFilesIndex: RelatedFilesIndex,
+  dependencyGraph: MinimalDependencyGraph,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
+      const document = await vscode.workspace.openTextDocument(uri)
+      const code = document.getText(range)
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
+        async () => {
+          const fixed = await agent.suggestCodeFix(code, diagnosticMessage, {
+            fileName: document.fileName,
+            fileContent: document.getText(),
+            selection: code,
+            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+          })
+
+          if (!fixed) {
+            vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running).')
+            return
+          }
+
+          const edit = new vscode.WorkspaceEdit()
+          edit.replace(uri, range, fixed)
+          await vscode.workspace.applyEdit(edit)
+          vscode.window.showInformationMessage('RailsForge: AI fix applied.')
+        },
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.fixAllInFile', async (uri?: vscode.Uri) => {
+      const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri
+      if (!targetUri) {return}
+      const document = await vscode.workspace.openTextDocument(targetUri)
+      const diagnostics = vscode.languages.getDiagnostics(targetUri).filter(d => d.source === 'RailsForge Principles')
+
+      let applied = 0
+      for (const diag of diagnostics) {
+        const codeActionContext: vscode.CodeActionContext = { diagnostics: [diag], only: undefined, triggerKind: vscode.CodeActionTriggerKind.Invoke }
+        const actions = principleLinter.provideCodeActions(document, diag.range, codeActionContext)
+        const deterministic = actions.find(a => a.edit && !a.command)
+        if (deterministic?.edit) {
+          await vscode.workspace.applyEdit(deterministic.edit)
+          applied++
+        }
+      }
+      vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+    }),
+    vscode.commands.registerCommand('railsforge.showSimilarPatterns', async (filePath: string, line: number) => {
+      const pattern = projectPatternIndexer.findPatternAt(filePath, line)
+      if (!pattern) {
+        vscode.window.showWarningMessage('RailsForge: No indexed pattern found at this location.')
+        return
+      }
+      const similar = projectPatternIndexer.findSimilar(pattern)
+      if (similar.length === 0) {
+        vscode.window.showInformationMessage(`No similar ${pattern.type}s found elsewhere in this project.`)
+        return
+      }
+      const items = similar.map(p => ({
+        label: p.name,
+        description: vscode.workspace.asRelativePath(p.filePath),
+        detail: p.publicMethods.length > 0 ? `Public methods: ${p.publicMethods.join(', ')}` : undefined,
+        pattern: p,
+      }))
+      const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: `Similar ${pattern.type}s to ${pattern.name} already in this project`,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      })
+      if (selected) {
+        const doc = await vscode.workspace.openTextDocument(selected.pattern.filePath)
+        const editor = await vscode.window.showTextDocument(doc)
+        const pos = new vscode.Position(Math.max(0, selected.pattern.lineStart - 1), 0)
+        editor.selection = new vscode.Selection(pos, pos)
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
+      }
+    }),
+    vscode.commands.registerCommand('railsforge.showRelatedFiles', async (name: string) => {
+      const items: Array<{ label: string; description: string; filePath: string; line?: number }> = []
+
+      const relations = relatedFilesIndex.getModelRelations(name)
+      for (const [type, list] of Object.entries(relations.patternsByType)) {
+        for (const p of list ?? []) {
+          items.push({ label: `$(symbol-class) ${p.name}`, description: type, filePath: p.filePath, line: p.lineStart })
+        }
+      }
+
+      for (const edge of dependencyGraph.getCollaborators(name)) {
+        const collaborator = projectPatternIndexer.getAllPatterns().find(p => p.name === edge.to)
+        if (collaborator) {
+          items.push({ label: `$(arrow-right) ${edge.to}`, description: 'depends on', filePath: collaborator.filePath, line: collaborator.lineStart })
+        }
+      }
+      for (const edge of dependencyGraph.getCallers(name)) {
+        const caller = projectPatternIndexer.getAllPatterns().find(p => p.name === edge.from)
+        if (caller) {
+          items.push({ label: `$(arrow-left) ${edge.from}`, description: 'called by', filePath: caller.filePath, line: caller.lineStart })
+        }
+      }
+      for (const specPath of relatedFilesIndex.getSpecFiles(name)) {
+        items.push({ label: `$(beaker) ${vscode.workspace.asRelativePath(specPath)}`, description: 'spec', filePath: specPath })
+      }
+
+      if (items.length === 0) {
+        vscode.window.showInformationMessage(`RailsForge: No related files indexed for ${name}.`)
+        return
+      }
+
+      const selected = await vscode.window.showQuickPick(items, { placeHolder: `Files related to ${name}` })
+      if (!selected) {return}
+
+      const doc = await vscode.workspace.openTextDocument(selected.filePath)
+      const editor = await vscode.window.showTextDocument(doc)
+      if (selected.line) {
+        const pos = new vscode.Position(Math.max(0, selected.line - 1), 0)
+        editor.selection = new vscode.Selection(pos, pos)
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
+      }
+    }),
     vscode.commands.registerCommand('railsforge.scanWorkspaceArchitecture', () => {
       patternDiagnostics.scanWorkspace()
       vscode.window.showInformationMessage('🔍 RailsForge: Live workspace architecture & pattern scan completed.')
@@ -327,9 +616,23 @@ function registerCommands(
       const name = await vscode.window.showInputBox({ prompt: 'Enter Service Object Name (e.g. ProcessOrder)' })
       if (!name) {return}
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
-      const res = serviceExtractor.extractService(name, selection, [], root)
-      serviceExtractor.saveServiceFile(res.serviceFilePath, res.serviceCode)
-      await editor.edit(edit => edit.replace(editor.selection, res.replacementCall))
+      const freeVars = serviceExtractor.detectFreeVariables(selection)
+      const res = serviceExtractor.extractService(name, selection, freeVars, root)
+
+      // Single WorkspaceEdit so VS Code shows one multi-file diff preview: only the
+      // selected range in the original file changes, plus the new service file — nothing
+      // else in the controller/model is touched.
+      const edit = new vscode.WorkspaceEdit()
+      const serviceUri = vscode.Uri.file(res.serviceFilePath)
+      edit.createFile(serviceUri, { ignoreIfExists: true })
+      edit.insert(serviceUri, new vscode.Position(0, 0), res.serviceCode)
+      edit.replace(editor.document.uri, editor.selection, res.replacementCall)
+
+      const applied = await vscode.workspace.applyEdit(edit)
+      if (!applied) {
+        vscode.window.showErrorMessage('RailsForge: Failed to apply Extract Service edit.')
+        return
+      }
       const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
       await vscode.window.showTextDocument(doc)
     }),

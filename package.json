@@ -10,7 +10,8 @@
     "url": "https://github.com/shubhamtaywade82/railsforge"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=20"
   },
   "categories": [
     "Programming Languages",
@@ -190,6 +191,21 @@
       ]
     },
     "commands": [
+      {
+        "command": "railsforge.fixAllInFile",
+        "title": "RailsForge: Fix All Deterministic Principle Violations in File",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.showSimilarPatterns",
+        "title": "RailsForge: Show Similar Patterns in This Project",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.showRelatedFiles",
+        "title": "RailsForge: Show Related Files (Services, Queries, Policies, Specs)",
+        "category": "RailsForge"
+      },
       {
         "command": "railsforge.scanWorkspaceArchitecture",
         "title": "RailsForge: Scan Workspace for Patterns, Smells & Safety",

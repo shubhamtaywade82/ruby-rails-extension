@@ -21,4 +21,16 @@ user
     expect(res.serviceCode).toContain("user.update!(status: 'active')")
     expect(res.replacementCall).toBe('ActivateUserService.call(user_id)')
   })
+
+  it('detects free variables the selection reads but does not assign', () => {
+    const code = `
+order = Order.create!(user: current_user, total: params[:total])
+OrderMailer.confirmation(order).deliver_later
+`
+    const freeVars = extractor.detectFreeVariables(code)
+
+    expect(freeVars).toContain('current_user')
+    expect(freeVars).toContain('params')
+    expect(freeVars).not.toContain('order')
+  })
 })

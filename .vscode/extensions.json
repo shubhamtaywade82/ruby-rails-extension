@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "shopify.ruby-lsp",
+    "kaiwood.endwise",
+    "marcoroth.stimulus-lsp",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode"
+  ]
+}

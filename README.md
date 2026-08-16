@@ -58,10 +58,12 @@ Quickly jump across related Rails companion files using ergonomic keybindings:
 
 ### 🏛️ 6. Design Principles Engine (SOLID, DRY, KISS, YAGNI & Demeter)
 
-- **SRP (Single Responsibility):** Flags Fat Models and Fat Controllers ($> 200$ LOC or $> 10$ actions) with 1-click QuickFix: *"Extract to Service Object"*.
-- **Law of Demeter:** Detects deep association violations (`user.account.billing.address.city`) and suggests `delegate :method, to: :assoc`.
+- **SRP (Single Responsibility):** Flags Fat Models and Fat Controllers ($> 200$ LOC or $> 10$ actions) with 1-click QuickFix: *"Extract to Service Object"* — a single `WorkspaceEdit` that creates the new service file and replaces only the selected code, leaving the rest of the file untouched.
+- **Law of Demeter:** Detects deep association violations (`user.account.billing.address.city`) with a real Quick Fix that inserts `delegate :method, to: :assoc` for you.
 - **KISS (Keep It Simple):** Warns against unnecessary dynamic metaprogramming (`define_method`, `class_eval`) for static logic.
-- **YAGNI (You Aren't Gonna Need It):** Flags unused private helper methods and dead abstractions.
+- **YAGNI (You Aren't Gonna Need It):** Flags unused private helper methods with a Quick Fix that deletes the whole unused method.
+- **Hard-Coded Collaborators:** `MinimalDependencyGraph` flags `PaymentGatewayService.call(...)`-style references to other indexed services/queries/policies and offers *"Inject `X` via constructor"* — adds a keyword constructor param and rewrites call sites in that file to use it.
+- **✨ AI Suggest Fix:** Every principle diagnostic also offers an AI-generated fix (via the local `@rails` agent) alongside the deterministic one, plus `RailsForge: Fix All Deterministic Principle Violations in File` to batch-apply the non-AI fixes.
 
 ### 📖 7. Version-Aware Documentation & Style Guide Engine
 
@@ -87,12 +89,66 @@ Dedicated Activity Bar Panel displaying:
 - **Extract to Service Object:** Select business logic in controllers or models and extract it into a clean `app/services/[name]_service.rb` implementing the `ApplicationService.call` pattern.
 - **Extract to Query Object:** Move complex ActiveRecord query chains into `app/queries/[name]_query.rb`.
 
+### 🧩 12. Living Pattern Catalog ("How We Do X Here")
+
+Unlike the static Refactoring Guru catalog (§10), this indexes **your own project's**
+`app/services`, `app/queries`, `app/forms`, `app/policies`, `app/decorators`, and
+concerns as you work:
+
+- **CodeLens on every Service/Query/Form/Policy class:** `📋 N similar patterns in this project`.
+- **`RailsForge: Show Similar Patterns in This Project`** — quick-pick of the closest
+  existing implementations (ranked by name and public-method overlap), so you check for
+  prior art before writing a new `CreateXService` from scratch.
+- **Live re-indexing** on file save/create/delete — no separate build step.
+- Feeds directly into the `@rails` agent's grounding (below), so generated code is
+  steered toward your existing patterns instead of reinventing them.
+
+### 🔗 13. Cross-File "Related Files" CodeLens & Hover
+
+Stops the "open 5-6 files to understand this class" loop:
+
+- **On a model** (`app/models/*.rb`): CodeLens above the class shows
+  `🔗 3 Services · 2 Queries · 1 Policy · 6 Specs` — every indexed pattern that
+  references the model by name or by `Model.find`/`.create`/`.where`-style usage,
+  plus its RSpec/Minitest spec count.
+- **On a service/query/policy/decorator**: CodeLens shows `🔗 Called by 7 · Depends on 3 · 2 Specs`,
+  sourced from the same collaborator graph the "Inject via constructor" Quick Fix uses (§6).
+- **Hover** the `class` definition line for the same information inline, without a click.
+- **`RailsForge: Show Related Files`** opens a quick-pick of everything found — services,
+  queries, policies, callers, collaborators, and specs — each jumping straight to the
+  right line.
+
+### 💎 14. Standalone Ruby Scripts & Gem Support
+
+RailsForge activates on any Ruby file, Gemfile, or `.rb` script — not only full Rails
+apps — and adjusts what it claims accordingly:
+
+- **`hasRails` detection:** `EnvironmentDetector` only reports a Rails version when
+  `rails` is an actual `Gemfile.lock` dependency. A standalone gem or script gets
+  `hasRails: false` instead of a fabricated Rails version, and the Architecture sidebar
+  shows *"Not a Rails app"* rather than a misleading `Rails ` line.
+- **`@rails` agent grounding adapts:** for a non-Rails project, the system prompt drops
+  the "strictly uses Rails X" constraint and Rails-specific advice (Service Objects,
+  N+1 prevention) in favor of plain-Ruby/SOLID guidance grounded only in gems that are
+  actually declared as dependencies — it won't assume ActiveRecord/ActionController exist.
+- **Pattern catalog works in `lib/`, not just `app/`:** `ProjectPatternIndexer` matches
+  `services/`, `queries/`, `forms/`, `policies/`, `decorators/`, and `concerns/`
+  directories anywhere in the path, so a gem's `lib/my_gem/services/*.rb` is indexed the
+  same way `app/services/*.rb` is — CodeLens, "show similar patterns", and the dependency
+  graph all work unmodified.
+- **SRP still flags fat classes in `lib/`**, just with generic "split this up" guidance
+  instead of the Rails-specific "extract to `app/services`" quick fix, since a gem has no
+  `app/` convention to extract into.
+- **Still Rails-only:** schema/route indexing, MVC navigation, migration safety, and
+  Hotwire/Stimulus tooling need `db/schema.rb`/`config/routes.rb`/`app/` structure that a
+  plain gem or script doesn't have, and simply do nothing rather than error.
+
 ### 🤖 11. Grounded Local AI Agent (`@rails`)
 
 Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):
 
 - **Version Anti-Hallucination:** Automatically discovers active Ruby and Rails versions from `Gemfile.lock` and `.ruby-version`, constraining the AI to compatible APIs only.
-- **Context Grounding:** Injects relevant database schema tables, column definitions, and route mappings into prompts.
+- **Context Grounding:** Injects relevant database schema tables, column definitions, route mappings, and a summary of existing Service/Query/Form/Policy patterns into prompts, with an explicit instruction to reuse or extend a close match before generating new code.
 - **Slash Commands in Chat:**
   - `@rails /explain` — Explain complex queries, scopes, and associations.
   - `@rails /service` — Scaffold clean Service Objects with Result monads.
@@ -159,6 +215,39 @@ cursor --install-extension railsforge.vsix
 ```
 
 *Or install manually via VS Code / Cursor Extensions View (`Ctrl+Shift+X`) $\to$ Click `...` $\to$ **Install from VSIX...** $\to$ select `railsforge.vsix`.*
+
+---
+
+## Relationship to Ruby LSP
+
+RailsForge is a **companion to Shopify's `ruby-lsp`**, not a replacement for it.
+Install both:
+
+```json
+// .vscode/extensions.json
+{ "recommendations": ["shopify.ruby-lsp", "nemesis.railsforge"] }
+```
+
+`ruby-lsp` (plus `ruby-lsp-rails`) remains the source of truth for Ruby syntax,
+diagnostics, and go-to-definition. RailsForge adds Rails-specific intelligence
+(schema peek, route search, pattern catalog, principle diagnostics, security
+scans, the local AI agent) on top. For deeper integration, RailsForge also
+ships an optional [`ruby-lsp` add-on gem](./ruby-lsp-addon) that injects schema
+context directly into `ruby-lsp`'s own Hover responses — see
+[`ruby-lsp-addon/README.md`](./ruby-lsp-addon/README.md) for setup and the
+current scope (schema-aware hover today; route-aware completion and
+association-aware navigation are natural next steps on the same scaffold).
+
+## Roadmap
+
+The pattern catalog, principle diagnostics, and `ruby-lsp` add-on above are the
+first slice of a larger "architectural guardrail" direction: project-wide
+semantic search, a dependency/collaborator graph for services, guided
+"Extract Service/Query with caller updates" refactors, and an MCP server so
+any AI client (not just the built-in `@rails` agent) can query RailsForge's
+index. These are tracked in [`PRD.md`](./PRD.md) and are a deliberately
+bigger lift (native indexing, AST parsing) than the current regex/heuristic
+approach — happy to scope any one of them as a follow-up.
 
 ---
 

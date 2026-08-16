@@ -194,3 +194,86 @@ graph TD
 | **Phase 5** | Testing Integration | `RSpecRunner`, `MinitestRunner`, `FactoryBotIndexer`. |
 | **Phase 6** | AI Agent & Chat Participant | `@rails` Chat Participant, Ollama client, Tool calling (`read_schema`, `read_routes`, `run_rspec`, `apply_patch`), Self-repair loop. |
 | **Phase 7** | Verification & Packaging | Unit tests, E2E fixtures, VSIX packaging, Performance audit. |
+
+---
+
+## 7. Roadmap: Architectural Guardrail System (Phase 8+)
+
+Positioning: RailsForge is the Rails-specific intelligence layer that sits
+*alongside* `ruby-lsp` (Ruby syntax/diagnostics) and TypeScript tooling
+(ESLint/Prettier/Tailwind), not a replacement for either — see README
+"Relationship to Ruby LSP". The next phases extend that layer from "useful
+Rails tools" toward keeping developers inside the project's own patterns and
+SOLID/DRY/YAGNI/KISS conventions without opening 5–6 files to check "how did
+we do this before."
+
+**Shipped as of this iteration (regex/heuristic, no new native dependencies):**
+
+- `ProjectPatternIndexer` — indexes `app/services|queries|forms|policies|decorators`
+  and concerns; `railsforge.showSimilarPatterns` command + CodeLens surface the
+  closest existing implementations for a given class.
+- `@rails` agent grounding now includes a summary of existing patterns, with an
+  explicit "search before generating" instruction in the system prompt.
+- `ruby-lsp-addon/` — a companion Ruby gem (`RubyLsp::Addon`) that appends
+  schema-aware hover into `ruby-lsp`'s own responses, proving the
+  ruby-lsp-complementary integration model end to end for one feature slice.
+- **Quick Fix / lightbulb layer on `DesignPrincipleLinter`**: Law of Demeter
+  inserts a `delegate :method, to: :receiver`; YAGNI deletes the unused
+  method's full block; every principle diagnostic also offers an
+  "✨ AI: Suggest fix" action backed by `RailsAgent.suggestCodeFix` (reuses
+  the existing Ollama config, no new AI client). `railsforge.fixAllInFile`
+  batch-applies the deterministic fixes in a file.
+- **`railsforge.extractService` is now a single atomic `WorkspaceEdit`**
+  (create service file + insert content + replace only the selected range),
+  so VS Code shows one multi-file diff preview and nothing outside the
+  selection is touched. Free variables (`params`, `current_user`, any
+  `receiver.method` in the selection) are now auto-detected instead of
+  always extracting a zero-arg service.
+- `MinimalDependencyGraph` (`src/graph/`) — regex-based (no AST library)
+  collaborator graph over `ProjectPatternIndexer`'s patterns. Flags
+  `PaymentGatewayService.call(...)`-style hard-coded collaborators with a
+  "Inject `X` via constructor" Quick Fix that adds a keyword constructor
+  param and rewrites call sites in that file to use it, and answers
+  "who calls this service" (`getCallers`).
+- `RelatedFilesIndex` (`src/graph/`) — reverse index from a model name to the
+  services/queries/policies/decorators/concerns that reference it (by name
+  match or `Model.find`/`.create`/`.where`-style usage in the body), plus a
+  spec/test index keyed by `RSpec.describe`/Minitest `class XTest` subject.
+  `RelatedCodeLensProvider` renders `🔗 3 Services · 2 Queries · 1 Policy · 6 Specs`
+  on models and `🔗 Called by 7 · Depends on 3 · 2 Specs` on services/queries/
+  policies (reusing `MinimalDependencyGraph`); `RelatedHoverProvider` shows the
+  same on hover of the `class` line; `railsforge.showRelatedFiles` opens a
+  quick-pick to jump straight to any of them. This is Phase 9 below, done.
+- **Standalone Ruby/gem support**: `ProjectEnvironment.hasRails` is now `true`
+  only when `rails` is an actual `Gemfile.lock` dependency (was previously
+  defaulted to `'7.1.0'` unconditionally). `RailsAgent`'s system prompt and
+  `RailsArchitectureTreeProvider`'s sidebar both branch on it instead of
+  claiming a Rails version a plain gem/script doesn't have. `ProjectPatternIndexer`'s
+  directory matching (`DIR_TYPE_MAP`) now matches `services/`, `queries/`,
+  `forms/`, `policies/`, `decorators/`, `concerns/` anywhere in the path —
+  not only under `app/` — so a gem's `lib/my_gem/services/*.rb` is indexed
+  the same as `app/services/*.rb`, and the pattern catalog/dependency graph/
+  related-files CodeLens work unmodified for gems. `DesignPrincipleLinter`'s
+  SRP check now also fires in `lib/` (generic "split this up" message, no
+  Rails-specific quick fix) instead of being silently scoped to `app/models`
+  and `app/controllers` only.
+
+**Not yet implemented — sized for separate follow-up work, roughly in this
+order:**
+
+| Phase | Feature | Why it's separate | Key infra decision |
+| :--- | :--- | :--- | :--- |
+| 8 | Principle diagnostics engine (expand DRY beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
+| 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
+| 11 | Cycle detection + richer dependency graph (currently: hard-coded-collaborator + caller lookups only, regex-based) | `MinimalDependencyGraph` shipped this iteration; cycle detection and multi-hop analysis want real AST parsing (constructor params, `include`, nested calls) for reliability at scale | Requires an AST library decision |
+| 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |
+| 13 | Guided "Extract Service/Query" that also updates all callers across files + generates a matching spec | Current Extract Service only replaces the local selection; updating callers elsewhere needs the caller index from Phase 11 to be reliable | Builds on 11/12 |
+| 14 | MCP server exposing the semantic index + `.cursor/rules` export | Depends on the index existing (10-12) | New process/protocol surface |
+| 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of the above; can be picked up any time | None |
+
+Phase 12 is called out specifically because `better-sqlite3`/`tree-sitter-ruby`
+are native Node modules — bundling them into a VS Code `.vsix` requires
+per-platform prebuilds and changes the current pure-JS/TS webpack build. That
+tradeoff (index scalability vs. packaging complexity) should be an explicit
+decision, not an incidental side effect of adding search or a dependency
+graph.

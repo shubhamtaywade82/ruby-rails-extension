@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import { EnvironmentDetector } from '../src/environment/EnvironmentDetector'
 
 describe('EnvironmentDetector', () => {
@@ -34,9 +37,37 @@ DEPENDENCIES
     expect(punditVer).toBe('2.3.1')
   })
 
+  it('marks hasRails false and leaves railsVersion empty for a standalone gem (no rails dependency)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-gem-'))
+    fs.writeFileSync(
+      path.join(tmpDir, 'Gemfile.lock'),
+      `
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rspec (3.13.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rspec
+`,
+    )
+
+    const env = detector.detectEnvironment(tmpDir)
+
+    expect(env.hasRails).toBe(false)
+    expect(env.railsVersion).toBe('')
+    expect(env.majorRailsVersion).toBe(0)
+
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
   it('determines binstub vs bundle exec command prefix', () => {
     const env = {
       rubyVersion: '3.3.0',
+      hasRails: true,
       railsVersion: '7.1.0',
       majorRailsVersion: 7,
       hasHotwire: true,
