@@ -16,7 +16,14 @@ export type SqliteDatabase = InstanceType<typeof Database>
 export function openIndexDatabase(dbPath: string, readonly = false): SqliteDatabase {
   const db: SqliteDatabase = new Database(dbPath, { readonly, fileMustExist: readonly })
   if (!readonly) {
-    db.pragma('journal_mode = WAL')
+    // WAL is meaningless for :memory: databases (used throughout the test suite) —
+    // there's no file for a second connection to read concurrently, and setting it
+    // anyway is a known source of platform-dependent instability in some SQLite
+    // builds. Only real on-disk databases (the actual worker/extension-host use case)
+    // need it.
+    if (dbPath !== ':memory:') {
+      db.pragma('journal_mode = WAL')
+    }
     migrate(db)
   }
   return db
