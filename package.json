@@ -354,5 +354,12 @@
     "tree-sitter": "^0.21.1",
     "tree-sitter-ruby": "^0.23.1",
     "zod": "^4.4.3"
+  },
+  "pnpm": {
+    "neverBuiltDependencies": [
+      "better-sqlite3",
+      "tree-sitter",
+      "tree-sitter-ruby"
+    ]
   }
 }
