@@ -85,7 +85,9 @@ export class RefactoringMenuProvider {
     const name = await vscode.window.showInputBox({ prompt: 'Enter Service Name (e.g. ProcessPayment)' })
     if (!name) {return}
 
-    const result = this.serviceExtractor.extractService(name, selectedText, [], root)
+    const freeVars = this.serviceExtractor.detectFreeVariables(selectedText)
+    const result = this.serviceExtractor.extractService(name, selectedText, freeVars, root)
+    this.serviceExtractor.saveServiceFile(result.serviceFilePath, result.serviceCode)
     const doc = await vscode.workspace.openTextDocument(result.serviceFilePath)
     await vscode.window.showTextDocument(doc)
     vscode.window.showInformationMessage(`Extracted Service Object: ${result.serviceFilePath}`)

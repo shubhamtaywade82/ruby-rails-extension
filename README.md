@@ -58,10 +58,12 @@ Quickly jump across related Rails companion files using ergonomic keybindings:
 
 ### 🏛️ 6. Design Principles Engine (SOLID, DRY, KISS, YAGNI & Demeter)
 
-- **SRP (Single Responsibility):** Flags Fat Models and Fat Controllers ($> 200$ LOC or $> 10$ actions) with 1-click QuickFix: *"Extract to Service Object"*.
-- **Law of Demeter:** Detects deep association violations (`user.account.billing.address.city`) and suggests `delegate :method, to: :assoc`.
+- **SRP (Single Responsibility):** Flags Fat Models and Fat Controllers ($> 200$ LOC or $> 10$ actions) with 1-click QuickFix: *"Extract to Service Object"* — a single `WorkspaceEdit` that creates the new service file and replaces only the selected code, leaving the rest of the file untouched.
+- **Law of Demeter:** Detects deep association violations (`user.account.billing.address.city`) with a real Quick Fix that inserts `delegate :method, to: :assoc` for you.
 - **KISS (Keep It Simple):** Warns against unnecessary dynamic metaprogramming (`define_method`, `class_eval`) for static logic.
-- **YAGNI (You Aren't Gonna Need It):** Flags unused private helper methods and dead abstractions.
+- **YAGNI (You Aren't Gonna Need It):** Flags unused private helper methods with a Quick Fix that deletes the whole unused method.
+- **Hard-Coded Collaborators:** `MinimalDependencyGraph` flags `PaymentGatewayService.call(...)`-style references to other indexed services/queries/policies and offers *"Inject `X` via constructor"* — adds a keyword constructor param and rewrites call sites in that file to use it.
+- **✨ AI Suggest Fix:** Every principle diagnostic also offers an AI-generated fix (via the local `@rails` agent) alongside the deterministic one, plus `RailsForge: Fix All Deterministic Principle Violations in File` to batch-apply the non-AI fixes.
 
 ### 📖 7. Version-Aware Documentation & Style Guide Engine
 

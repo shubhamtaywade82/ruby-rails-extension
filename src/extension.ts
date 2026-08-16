@@ -34,6 +34,8 @@ import { PatternCatalogTreeProvider } from './views/PatternCatalogTreeProvider'
 import { PatternDiagnosticsProvider } from './patterns/PatternDiagnosticsProvider'
 import { ProjectPatternIndexer } from './patterns/ProjectPatternIndexer'
 import { PatternCodeLensProvider } from './patterns/PatternCodeLensProvider'
+import { MinimalDependencyGraph } from './graph/MinimalDependencyGraph'
+import { DependencyDiagnosticsProvider } from './graph/DependencyDiagnosticsProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
@@ -55,6 +57,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const patternDiagnostics = new PatternDiagnosticsProvider()
   const projectPatternIndexer = new ProjectPatternIndexer()
   const patternCodeLensProvider = new PatternCodeLensProvider(projectPatternIndexer)
+  const dependencyGraph = new MinimalDependencyGraph(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const dependencyDiagnostics = new DependencyDiagnosticsProvider(dependencyGraph, projectPatternIndexer)
   const docsEngine = new VersionDocsEngine()
   const factoryBotResolver = new FactoryBotResolver()
   const policyNavigator = new PolicyNavigator()
@@ -112,9 +116,9 @@ export function activate(context: vscode.ExtensionContext): void {
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
     patternDiagnostics.scanWorkspace()
-    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider)
+    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
-    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider)
+    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics)
   }
 
   // 3. Activity Bar Tree Views
@@ -139,6 +143,9 @@ export function activate(context: vscode.ExtensionContext): void {
       providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorExtract],
     }),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, patternDiagnostics),
+    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, dependencyDiagnostics, {
+      providedCodeActionKinds: [vscode.CodeActionKind.Refactor],
+    }),
     vscode.languages.registerCompletionItemProvider(
       ['erb', 'html', 'ruby'],
       new StimulusCompletionProvider(stimulusIndexer),
@@ -153,6 +160,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deprecationLinter,
     principleLinter,
     patternDiagnostics,
+    dependencyDiagnostics,
     rubocopProvider,
   )
 
@@ -163,6 +171,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deprecationLinter.updateDiagnostics(doc, env)
     principleLinter.updateDiagnostics(doc)
     patternDiagnostics.updateDiagnostics(doc)
+    dependencyDiagnostics.updateDiagnostics(doc)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
@@ -170,6 +179,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deprecationLinter.updateDiagnostics(e.document, env)
     principleLinter.updateDiagnostics(e.document)
     patternDiagnostics.updateDiagnostics(e.document)
+    dependencyDiagnostics.updateDiagnostics(e.document)
   }, null, context.subscriptions)
 
   // 4. Register Commands
@@ -250,6 +260,8 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
 async function loadProjectPatterns(
   indexer: ProjectPatternIndexer,
   codeLensProvider: PatternCodeLensProvider,
+  dependencyGraph: MinimalDependencyGraph,
+  dependencyDiagnostics: DependencyDiagnosticsProvider,
 ): Promise<void> {
   const globs = [
     'app/services/**/*.rb',
@@ -269,12 +281,16 @@ async function loadProjectPatterns(
     }
   }
   codeLensProvider.refresh()
+  dependencyGraph.rebuild()
+  refreshOpenDependencyDiagnostics(dependencyDiagnostics)
 }
 
 function watchPatternFiles(
   context: vscode.ExtensionContext,
   indexer: ProjectPatternIndexer,
   codeLensProvider: PatternCodeLensProvider,
+  dependencyGraph: MinimalDependencyGraph,
+  dependencyDiagnostics: DependencyDiagnosticsProvider,
 ): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/app/{services,queries,forms,policies,decorators,models/concerns,controllers/concerns}/**/*.rb',
@@ -286,14 +302,24 @@ function watchPatternFiles(
       indexer.removeFile(uri.fsPath)
     }
     codeLensProvider.refresh()
+    dependencyGraph.rebuild()
+    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
   }
   watcher.onDidChange(reindex)
   watcher.onDidCreate(reindex)
   watcher.onDidDelete(uri => {
     indexer.removeFile(uri.fsPath)
     codeLensProvider.refresh()
+    dependencyGraph.rebuild()
+    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
   })
   context.subscriptions.push(watcher)
+}
+
+function refreshOpenDependencyDiagnostics(dependencyDiagnostics: DependencyDiagnosticsProvider): void {
+  for (const doc of vscode.workspace.textDocuments) {
+    dependencyDiagnostics.updateDiagnostics(doc)
+  }
 }
 
 function loadSchema(root: string, indexer: SchemaIndexer): void {
@@ -496,9 +522,23 @@ function registerCommands(
       const name = await vscode.window.showInputBox({ prompt: 'Enter Service Object Name (e.g. ProcessOrder)' })
       if (!name) {return}
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
-      const res = serviceExtractor.extractService(name, selection, [], root)
-      serviceExtractor.saveServiceFile(res.serviceFilePath, res.serviceCode)
-      await editor.edit(edit => edit.replace(editor.selection, res.replacementCall))
+      const freeVars = serviceExtractor.detectFreeVariables(selection)
+      const res = serviceExtractor.extractService(name, selection, freeVars, root)
+
+      // Single WorkspaceEdit so VS Code shows one multi-file diff preview: only the
+      // selected range in the original file changes, plus the new service file — nothing
+      // else in the controller/model is touched.
+      const edit = new vscode.WorkspaceEdit()
+      const serviceUri = vscode.Uri.file(res.serviceFilePath)
+      edit.createFile(serviceUri, { ignoreIfExists: true })
+      edit.insert(serviceUri, new vscode.Position(0, 0), res.serviceCode)
+      edit.replace(editor.document.uri, editor.selection, res.replacementCall)
+
+      const applied = await vscode.workspace.applyEdit(edit)
+      if (!applied) {
+        vscode.window.showErrorMessage('RailsForge: Failed to apply Extract Service edit.')
+        return
+      }
       const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
       await vscode.window.showTextDocument(doc)
     }),

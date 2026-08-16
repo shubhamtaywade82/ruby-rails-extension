@@ -217,18 +217,36 @@ we do this before."
 - `ruby-lsp-addon/` — a companion Ruby gem (`RubyLsp::Addon`) that appends
   schema-aware hover into `ruby-lsp`'s own responses, proving the
   ruby-lsp-complementary integration model end to end for one feature slice.
+- **Quick Fix / lightbulb layer on `DesignPrincipleLinter`**: Law of Demeter
+  inserts a `delegate :method, to: :receiver`; YAGNI deletes the unused
+  method's full block; every principle diagnostic also offers an
+  "✨ AI: Suggest fix" action backed by `RailsAgent.suggestCodeFix` (reuses
+  the existing Ollama config, no new AI client). `railsforge.fixAllInFile`
+  batch-applies the deterministic fixes in a file.
+- **`railsforge.extractService` is now a single atomic `WorkspaceEdit`**
+  (create service file + insert content + replace only the selected range),
+  so VS Code shows one multi-file diff preview and nothing outside the
+  selection is touched. Free variables (`params`, `current_user`, any
+  `receiver.method` in the selection) are now auto-detected instead of
+  always extracting a zero-arg service.
+- `MinimalDependencyGraph` (`src/graph/`) — regex-based (no AST library)
+  collaborator graph over `ProjectPatternIndexer`'s patterns. Flags
+  `PaymentGatewayService.call(...)`-style hard-coded collaborators with a
+  "Inject `X` via constructor" Quick Fix that adds a keyword constructor
+  param and rewrites call sites in that file to use it, and answers
+  "who calls this service" (`getCallers`).
 
 **Not yet implemented — sized for separate follow-up work, roughly in this
 order:**
 
 | Phase | Feature | Why it's separate | Key infra decision |
 | :--- | :--- | :--- | :--- |
-| 8 | Principle diagnostics engine (expand SRP/DRY/YAGNI/KISS/Demeter beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
+| 8 | Principle diagnostics engine (expand DRY beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
 | 9 | Cross-file "Related" CodeLens + richer hover (model → services/queries/policies/specs count) | Needs a reverse index (model → dependents), not just forward classification | None — extends current indexers |
 | 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
-| 11 | Dependency/collaborator graph + cycle detection | Needs real AST parsing (constructor params, `include`, calls), not line regex | Requires an AST library decision |
+| 11 | Cycle detection + richer dependency graph (currently: hard-coded-collaborator + caller lookups only, regex-based) | `MinimalDependencyGraph` shipped this iteration; cycle detection and multi-hop analysis want real AST parsing (constructor params, `include`, nested calls) for reliability at scale | Requires an AST library decision |
 | 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |
-| 13 | Guided "Extract Service/Query" that also updates all callers + generates a matching spec | Depends on the dependency graph (12) to find callers safely | Builds on 11/12 |
+| 13 | Guided "Extract Service/Query" that also updates all callers across files + generates a matching spec | Current Extract Service only replaces the local selection; updating callers elsewhere needs the caller index from Phase 11 to be reliable | Builds on 11/12 |
 | 14 | MCP server exposing the semantic index + `.cursor/rules` export | Depends on the index existing (10-12) | New process/protocol surface |
 | 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of the above; can be picked up any time | None |
 
