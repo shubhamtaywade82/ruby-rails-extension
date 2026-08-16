@@ -7,6 +7,8 @@ import * as path from 'path'
 
 export interface ProjectEnvironment {
   rubyVersion: string
+  /** True only when `rails` is an actual Gemfile.lock dependency — a plain gem/script isn't a Rails app. */
+  hasRails: boolean
   railsVersion: string
   majorRailsVersion: number
   hasHotwire: boolean
@@ -24,8 +26,10 @@ export class EnvironmentDetector {
   detectEnvironment(workspaceRoot: string): ProjectEnvironment {
     const rubyVersion = this.detectRubyVersion(workspaceRoot)
     const gemfileLockContent = this.readGemfileLock(workspaceRoot)
-    const railsVersion = this.extractGemVersion(gemfileLockContent, 'rails') || '7.1.0'
-    const majorRails = parseInt(railsVersion.split('.')[0], 10) || 7
+    const detectedRailsVersion = this.extractGemVersion(gemfileLockContent, 'rails')
+    const hasRails = detectedRailsVersion !== null
+    const railsVersion = detectedRailsVersion ?? ''
+    const majorRails = hasRails ? parseInt(railsVersion.split('.')[0], 10) || 7 : 0
 
     const hasTurbo = gemfileLockContent.includes('turbo-rails')
     const hasStimulus = gemfileLockContent.includes('stimulus-rails')
@@ -39,6 +43,7 @@ export class EnvironmentDetector {
 
     return {
       rubyVersion,
+      hasRails,
       railsVersion,
       majorRailsVersion: majorRails,
       hasHotwire,

@@ -52,18 +52,29 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
 
   private checkSRP(fileName: string, lines: string[], list: PrincipleDiagnostic[]): void {
     const isModelOrController = fileName.includes('/app/models/') || fileName.includes('/app/controllers/')
-    if (!isModelOrController) {return}
+    // Fat classes are worth flagging outside Rails' app/ convention too (e.g. a gem's lib/),
+    // just without Rails-specific "extract to app/services" wording/quick fix.
+    const isPlainRubyClass = fileName.includes('/lib/') && !fileName.includes('/app/')
+    if (!isModelOrController && !isPlainRubyClass) {return}
 
     if (lines.length > 200) {
-      list.push({
-        id: 'SRP-FAT-CLASS',
-        title: 'Single Responsibility Principle Violation',
-        message: `Class has ${lines.length} lines. Consider extracting domain logic into Service Objects (app/services) or Query Objects (app/queries).`,
-        line: 1,
-        severity: vscode.DiagnosticSeverity.Information,
-        quickFixTitle: 'Extract selection to Service Object',
-        quickFixCommand: 'railsforge.extractService',
-      })
+      list.push(isModelOrController
+        ? {
+          id: 'SRP-FAT-CLASS',
+          title: 'Single Responsibility Principle Violation',
+          message: `Class has ${lines.length} lines. Consider extracting domain logic into Service Objects (app/services) or Query Objects (app/queries).`,
+          line: 1,
+          severity: vscode.DiagnosticSeverity.Information,
+          quickFixTitle: 'Extract selection to Service Object',
+          quickFixCommand: 'railsforge.extractService',
+        }
+        : {
+          id: 'SRP-FAT-CLASS',
+          title: 'Single Responsibility Principle Violation',
+          message: `Class has ${lines.length} lines. Consider splitting it into smaller, focused classes/modules.`,
+          line: 1,
+          severity: vscode.DiagnosticSeverity.Information,
+        })
     }
   }
 
@@ -172,7 +183,9 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
 
       const meta = metadata.find(m => m.id === diag.code && Math.max(0, m.line - 1) === diag.range.start.line)
 
-      if (diag.code === 'SRP-FAT-CLASS') {
+      // Only offer the Rails-specific "extract to app/services" fix for the model/controller
+      // variant of this diagnostic — a gem/script's fat class doesn't have that quick fix.
+      if (diag.code === 'SRP-FAT-CLASS' && meta?.quickFixCommand === 'railsforge.extractService') {
         const extractAction = new vscode.CodeAction(
           'Extract selected code to Service Object',
           vscode.CodeActionKind.RefactorExtract,

@@ -113,16 +113,27 @@ export class RailsAgent {
     const tables = this.schemaIndexer.getAllTables().map(t => `${t.name} (${Array.from(t.columns.keys()).join(', ')})`)
     const routes = this.routesIndexer.getAllRoutes().slice(0, 30).map(r => `${r.verb} ${r.uriPattern} => ${r.controller}#${r.action}`)
     const rubyVer = this.env?.rubyVersion ?? '3.3.0'
-    const railsVer = this.env?.railsVersion ?? '7.1.0'
+    // Undetected env defaults to "assume Rails" (RailsForge's primary use case); an explicitly
+    // detected non-Rails project (a gem/script with no `rails` Gemfile.lock dependency) must not
+    // be told it's constrained to a Rails version it doesn't actually depend on.
+    const isRailsProject = this.env === undefined || this.env.hasRails
 
-    const parts: string[] = [
-      'You are RailsForge AI, a senior Ruby on Rails engineering assistant.',
-      `CRITICAL CONSTRAINT: The active project strictly uses Ruby ${rubyVer} and Rails ${railsVer}.`,
-      `Do NOT use or suggest features from newer Ruby or Rails versions. Only use standard library modules and gem APIs compatible with Ruby ${rubyVer} and Rails ${railsVer}.`,
-      'Always produce clean, modern, idiomatic code adhering to RuboCop-Rails standards.',
-      'Follow SOLID principles, avoid fat controllers, extract business logic to Service Objects, and prevent N+1 queries.',
-      'Before generating a new Service, Query, Form, Policy, or Decorator, search the "Existing Project Patterns" list below. If a close match exists, reuse or extend it instead of writing a new one from scratch, and say so explicitly.',
-    ]
+    const parts: string[] = isRailsProject
+      ? [
+        'You are RailsForge AI, a senior Ruby on Rails engineering assistant.',
+        `CRITICAL CONSTRAINT: The active project strictly uses Ruby ${rubyVer} and Rails ${this.env?.railsVersion ?? '7.1.0'}.`,
+        `Do NOT use or suggest features from newer Ruby or Rails versions. Only use standard library modules and gem APIs compatible with Ruby ${rubyVer} and Rails ${this.env?.railsVersion ?? '7.1.0'}.`,
+        'Always produce clean, modern, idiomatic code adhering to RuboCop-Rails standards.',
+        'Follow SOLID principles, avoid fat controllers, extract business logic to Service Objects, and prevent N+1 queries.',
+        'Before generating a new Service, Query, Form, Policy, or Decorator, search the "Existing Project Patterns" list below. If a close match exists, reuse or extend it instead of writing a new one from scratch, and say so explicitly.',
+      ]
+      : [
+        'You are RailsForge AI, a senior Ruby engineering assistant.',
+        `CRITICAL CONSTRAINT: The active project is a standalone Ruby codebase (gem or script) using Ruby ${rubyVer}. It does NOT depend on Rails — do not assume ActiveRecord, ActionController, or any other Rails framework API is available unless it appears as an actual dependency below.`,
+        'Only use Ruby standard library and gem APIs that are actually declared as dependencies.',
+        'Follow SOLID principles and keep classes focused on a single responsibility.',
+        'Before generating new code, search the "Existing Project Patterns" list below. If a close match exists, reuse or extend it instead of writing a new one from scratch, and say so explicitly.',
+      ]
 
     const patternSummary = this.summarizePatterns()
     if (patternSummary) {

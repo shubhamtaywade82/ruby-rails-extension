@@ -17,14 +17,16 @@ export interface IndexedPattern {
   preview: string
 }
 
+// Matched anywhere in the path, not just under app/, so a gem's lib/mygem/services/*.rb
+// (a common convention for standalone Ruby gems that don't have a Rails `app/` directory)
+// is indexed the same way app/services/*.rb is.
 const DIR_TYPE_MAP: Array<{ segment: string; type: PatternType }> = [
-  { segment: '/app/services/', type: 'service' },
-  { segment: '/app/queries/', type: 'query' },
-  { segment: '/app/forms/', type: 'form' },
-  { segment: '/app/policies/', type: 'policy' },
-  { segment: '/app/decorators/', type: 'decorator' },
-  { segment: '/app/models/concerns/', type: 'concern' },
-  { segment: '/app/controllers/concerns/', type: 'concern' },
+  { segment: '/services/', type: 'service' },
+  { segment: '/queries/', type: 'query' },
+  { segment: '/forms/', type: 'form' },
+  { segment: '/policies/', type: 'policy' },
+  { segment: '/decorators/', type: 'decorator' },
+  { segment: '/concerns/', type: 'concern' },
 ]
 
 export class ProjectPatternIndexer {

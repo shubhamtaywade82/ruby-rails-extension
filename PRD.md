@@ -244,6 +244,19 @@ we do this before."
   policies (reusing `MinimalDependencyGraph`); `RelatedHoverProvider` shows the
   same on hover of the `class` line; `railsforge.showRelatedFiles` opens a
   quick-pick to jump straight to any of them. This is Phase 9 below, done.
+- **Standalone Ruby/gem support**: `ProjectEnvironment.hasRails` is now `true`
+  only when `rails` is an actual `Gemfile.lock` dependency (was previously
+  defaulted to `'7.1.0'` unconditionally). `RailsAgent`'s system prompt and
+  `RailsArchitectureTreeProvider`'s sidebar both branch on it instead of
+  claiming a Rails version a plain gem/script doesn't have. `ProjectPatternIndexer`'s
+  directory matching (`DIR_TYPE_MAP`) now matches `services/`, `queries/`,
+  `forms/`, `policies/`, `decorators/`, `concerns/` anywhere in the path —
+  not only under `app/` — so a gem's `lib/my_gem/services/*.rb` is indexed
+  the same as `app/services/*.rb`, and the pattern catalog/dependency graph/
+  related-files CodeLens work unmodified for gems. `DesignPrincipleLinter`'s
+  SRP check now also fires in `lib/` (generic "split this up" message, no
+  Rails-specific quick fix) instead of being silently scoped to `app/models`
+  and `app/controllers` only.
 
 **Not yet implemented — sized for separate follow-up work, roughly in this
 order:**

@@ -118,6 +118,31 @@ Stops the "open 5-6 files to understand this class" loop:
   queries, policies, callers, collaborators, and specs — each jumping straight to the
   right line.
 
+### 💎 14. Standalone Ruby Scripts & Gem Support
+
+RailsForge activates on any Ruby file, Gemfile, or `.rb` script — not only full Rails
+apps — and adjusts what it claims accordingly:
+
+- **`hasRails` detection:** `EnvironmentDetector` only reports a Rails version when
+  `rails` is an actual `Gemfile.lock` dependency. A standalone gem or script gets
+  `hasRails: false` instead of a fabricated Rails version, and the Architecture sidebar
+  shows *"Not a Rails app"* rather than a misleading `Rails ` line.
+- **`@rails` agent grounding adapts:** for a non-Rails project, the system prompt drops
+  the "strictly uses Rails X" constraint and Rails-specific advice (Service Objects,
+  N+1 prevention) in favor of plain-Ruby/SOLID guidance grounded only in gems that are
+  actually declared as dependencies — it won't assume ActiveRecord/ActionController exist.
+- **Pattern catalog works in `lib/`, not just `app/`:** `ProjectPatternIndexer` matches
+  `services/`, `queries/`, `forms/`, `policies/`, `decorators/`, and `concerns/`
+  directories anywhere in the path, so a gem's `lib/my_gem/services/*.rb` is indexed the
+  same way `app/services/*.rb` is — CodeLens, "show similar patterns", and the dependency
+  graph all work unmodified.
+- **SRP still flags fat classes in `lib/`**, just with generic "split this up" guidance
+  instead of the Rails-specific "extract to `app/services`" quick fix, since a gem has no
+  `app/` convention to extract into.
+- **Still Rails-only:** schema/route indexing, MVC navigation, migration safety, and
+  Hotwire/Stimulus tooling need `db/schema.rb`/`config/routes.rb`/`app/` structure that a
+  plain gem or script doesn't have, and simply do nothing rather than error.
+
 ### 🤖 11. Grounded Local AI Agent (`@rails`)
 
 Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):

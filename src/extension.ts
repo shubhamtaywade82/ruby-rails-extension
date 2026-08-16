@@ -276,14 +276,16 @@ async function loadProjectPatterns(
   dependencyDiagnostics: DependencyDiagnosticsProvider,
   relatedCodeLensProvider: RelatedCodeLensProvider,
 ): Promise<void> {
+  // Matches both app/services/**/*.rb (Rails) and lib/**/services/**/*.rb (a gem/script
+  // with no app/ directory), since ProjectPatternIndexer.classifyPath now matches the
+  // directory name anywhere in the path.
   const globs = [
-    'app/services/**/*.rb',
-    'app/queries/**/*.rb',
-    'app/forms/**/*.rb',
-    'app/policies/**/*.rb',
-    'app/decorators/**/*.rb',
-    'app/models/concerns/**/*.rb',
-    'app/controllers/concerns/**/*.rb',
+    '{app,lib}/**/services/**/*.rb',
+    '{app,lib}/**/queries/**/*.rb',
+    '{app,lib}/**/forms/**/*.rb',
+    '{app,lib}/**/policies/**/*.rb',
+    '{app,lib}/**/decorators/**/*.rb',
+    '{app,lib}/**/concerns/**/*.rb',
   ]
 
   for (const glob of globs) {
@@ -339,7 +341,7 @@ function watchPatternFiles(
   relatedCodeLensProvider: RelatedCodeLensProvider,
 ): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
-    '**/app/{services,queries,forms,policies,decorators,models/concerns,controllers/concerns}/**/*.rb',
+    '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
   )
   const reindex = (uri: vscode.Uri): void => {
     if (fs.existsSync(uri.fsPath)) {
