@@ -191,6 +191,11 @@
     },
     "commands": [
       {
+        "command": "railsforge.showSimilarPatterns",
+        "title": "RailsForge: Show Similar Patterns in This Project",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.scanWorkspaceArchitecture",
         "title": "RailsForge: Scan Workspace for Patterns, Smells & Safety",
         "category": "RailsForge"

@@ -32,6 +32,8 @@ import { FactoryBotResolver } from './testing/FactoryBotResolver'
 import { RailsArchitectureTreeProvider } from './views/RailsArchitectureTreeProvider'
 import { PatternCatalogTreeProvider } from './views/PatternCatalogTreeProvider'
 import { PatternDiagnosticsProvider } from './patterns/PatternDiagnosticsProvider'
+import { ProjectPatternIndexer } from './patterns/ProjectPatternIndexer'
+import { PatternCodeLensProvider } from './patterns/PatternCodeLensProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
@@ -51,6 +53,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const deprecationLinter = new RailsDeprecationLinter()
   const principleLinter = new DesignPrincipleLinter()
   const patternDiagnostics = new PatternDiagnosticsProvider()
+  const projectPatternIndexer = new ProjectPatternIndexer()
+  const patternCodeLensProvider = new PatternCodeLensProvider(projectPatternIndexer)
   const docsEngine = new VersionDocsEngine()
   const factoryBotResolver = new FactoryBotResolver()
   const policyNavigator = new PolicyNavigator()
@@ -87,6 +91,7 @@ export function activate(context: vscode.ExtensionContext): void {
       model: config.get<string>('ollama.model', 'qwen2.5-coder:14b'),
     },
     env,
+    projectPatternIndexer,
   )
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
@@ -107,7 +112,9 @@ export function activate(context: vscode.ExtensionContext): void {
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
     patternDiagnostics.scanWorkspace()
+    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
+    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider)
   }
 
   // 3. Activity Bar Tree Views
@@ -138,6 +145,7 @@ export function activate(context: vscode.ExtensionContext): void {
       '=',
     ),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
+    vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
     testExplorer.getController(),
     migrationDiagnostics,
     deprecationLinter,
@@ -178,10 +186,16 @@ export function activate(context: vscode.ExtensionContext): void {
     patternDiagnostics,
     serviceExtractor,
     queryExtractor,
+    projectPatternIndexer,
   )
 
   // 5. Register Chat Participant
   RailsChatParticipant.getInstance().register(context, agent, schemaIndexer, routesIndexer)
+
+  // 6. Suggest the ruby-lsp add-on when ruby-lsp is present but the gem isn't
+  if (workspaceRoot) {
+    void suggestRubyLspAddon(context, workspaceRoot)
+  }
 
   // 6. Status Bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100)
@@ -189,6 +203,31 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.tooltip = 'RailsForge: Active'
   statusBar.show()
   context.subscriptions.push(statusBar)
+}
+
+async function suggestRubyLspAddon(context: vscode.ExtensionContext, root: string): Promise<void> {
+  const dismissedKey = 'railsforge.dismissedRubyLspAddonSuggestion'
+  if (context.globalState.get<boolean>(dismissedKey)) {return}
+
+  const rubyLspInstalled = Boolean(vscode.extensions.getExtension('Shopify.ruby-lsp'))
+  if (!rubyLspInstalled) {return}
+
+  const lockPath = path.join(root, 'Gemfile.lock')
+  if (!fs.existsSync(lockPath)) {return}
+  const lock = fs.readFileSync(lockPath, 'utf8')
+  if (!lock.includes(' ruby-lsp ') || lock.includes('railsforge-ruby-lsp')) {return}
+
+  const choice = await vscode.window.showInformationMessage(
+    'RailsForge can add schema-aware hover directly into ruby-lsp via a small companion gem (railsforge-ruby-lsp). Add it to your Gemfile?',
+    'Show Instructions',
+    "Don't show again",
+  )
+  if (choice === 'Show Instructions') {
+    void vscode.env.openExternal(vscode.Uri.parse('https://github.com/shubhamtaywade82/railsforge/tree/main/ruby-lsp-addon'))
+  }
+  if (choice) {
+    void context.globalState.update(dismissedKey, true)
+  }
 }
 
 function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
@@ -204,6 +243,55 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
     }
   }
 }
+async function loadProjectPatterns(
+  indexer: ProjectPatternIndexer,
+  codeLensProvider: PatternCodeLensProvider,
+): Promise<void> {
+  const globs = [
+    'app/services/**/*.rb',
+    'app/queries/**/*.rb',
+    'app/forms/**/*.rb',
+    'app/policies/**/*.rb',
+    'app/decorators/**/*.rb',
+    'app/models/concerns/**/*.rb',
+    'app/controllers/concerns/**/*.rb',
+  ]
+
+  for (const glob of globs) {
+    const files = await vscode.workspace.findFiles(glob, '**/node_modules/**')
+    for (const file of files) {
+      const content = fs.readFileSync(file.fsPath, 'utf8')
+      indexer.indexFile(file.fsPath, content)
+    }
+  }
+  codeLensProvider.refresh()
+}
+
+function watchPatternFiles(
+  context: vscode.ExtensionContext,
+  indexer: ProjectPatternIndexer,
+  codeLensProvider: PatternCodeLensProvider,
+): void {
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    '**/app/{services,queries,forms,policies,decorators,models/concerns,controllers/concerns}/**/*.rb',
+  )
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      indexer.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      indexer.removeFile(uri.fsPath)
+    }
+    codeLensProvider.refresh()
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => {
+    indexer.removeFile(uri.fsPath)
+    codeLensProvider.refresh()
+  })
+  context.subscriptions.push(watcher)
+}
+
 function loadSchema(root: string, indexer: SchemaIndexer): void {
   const schemaPath = path.join(root, 'db', 'schema.rb')
   if (fs.existsSync(schemaPath)) {
@@ -257,8 +345,39 @@ function registerCommands(
   patternDiagnostics: PatternDiagnosticsProvider,
   serviceExtractor: ServiceExtractor,
   queryExtractor: QueryExtractor,
+  projectPatternIndexer: ProjectPatternIndexer,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.showSimilarPatterns', async (filePath: string, line: number) => {
+      const pattern = projectPatternIndexer.findPatternAt(filePath, line)
+      if (!pattern) {
+        vscode.window.showWarningMessage('RailsForge: No indexed pattern found at this location.')
+        return
+      }
+      const similar = projectPatternIndexer.findSimilar(pattern)
+      if (similar.length === 0) {
+        vscode.window.showInformationMessage(`No similar ${pattern.type}s found elsewhere in this project.`)
+        return
+      }
+      const items = similar.map(p => ({
+        label: p.name,
+        description: vscode.workspace.asRelativePath(p.filePath),
+        detail: p.publicMethods.length > 0 ? `Public methods: ${p.publicMethods.join(', ')}` : undefined,
+        pattern: p,
+      }))
+      const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: `Similar ${pattern.type}s to ${pattern.name} already in this project`,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      })
+      if (selected) {
+        const doc = await vscode.workspace.openTextDocument(selected.pattern.filePath)
+        const editor = await vscode.window.showTextDocument(doc)
+        const pos = new vscode.Position(Math.max(0, selected.pattern.lineStart - 1), 0)
+        editor.selection = new vscode.Selection(pos, pos)
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
+      }
+    }),
     vscode.commands.registerCommand('railsforge.scanWorkspaceArchitecture', () => {
       patternDiagnostics.scanWorkspace()
       vscode.window.showInformationMessage('🔍 RailsForge: Live workspace architecture & pattern scan completed.')

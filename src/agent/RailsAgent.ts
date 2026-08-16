@@ -5,6 +5,7 @@
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { ProjectEnvironment } from '../environment/EnvironmentDetector'
+import { ProjectPatternIndexer } from '../patterns/ProjectPatternIndexer'
 
 export interface RailsAgentConfig {
   ollamaHost: string
@@ -31,6 +32,7 @@ export class RailsAgent {
     private routesIndexer: RoutesIndexer,
     private config: RailsAgentConfig,
     private env?: ProjectEnvironment,
+    private patternIndexer?: ProjectPatternIndexer,
   ) {}
 
   async run(prompt: string, context: RailsAgentContext): Promise<RailsAgentResult> {
@@ -98,7 +100,13 @@ export class RailsAgent {
       `Do NOT use or suggest features from newer Ruby or Rails versions. Only use standard library modules and gem APIs compatible with Ruby ${rubyVer} and Rails ${railsVer}.`,
       'Always produce clean, modern, idiomatic code adhering to RuboCop-Rails standards.',
       'Follow SOLID principles, avoid fat controllers, extract business logic to Service Objects, and prevent N+1 queries.',
+      'Before generating a new Service, Query, Form, Policy, or Decorator, search the "Existing Project Patterns" list below. If a close match exists, reuse or extend it instead of writing a new one from scratch, and say so explicitly.',
     ]
+
+    const patternSummary = this.summarizePatterns()
+    if (patternSummary) {
+      parts.push(`Existing Project Patterns (reuse before generating new code):\n${patternSummary}`)
+    }
 
     if (tables.length > 0) {
       parts.push(`Active Database Schema:\n${tables.join('\n')}`)
@@ -117,5 +125,20 @@ export class RailsAgent {
     }
 
     return parts.join('\n\n')
+  }
+
+  private summarizePatterns(): string {
+    if (!this.patternIndexer) {return ''}
+
+    const byType = new Map<string, string[]>()
+    for (const pattern of this.patternIndexer.getAllPatterns()) {
+      const list = byType.get(pattern.type) ?? []
+      list.push(`${pattern.name} (${pattern.filePath})`)
+      byType.set(pattern.type, list)
+    }
+
+    return Array.from(byType.entries())
+      .map(([type, names]) => `- ${type}: ${names.slice(0, 8).join(', ')}`)
+      .join('\n')
   }
 }

@@ -194,3 +194,47 @@ graph TD
 | **Phase 5** | Testing Integration | `RSpecRunner`, `MinitestRunner`, `FactoryBotIndexer`. |
 | **Phase 6** | AI Agent & Chat Participant | `@rails` Chat Participant, Ollama client, Tool calling (`read_schema`, `read_routes`, `run_rspec`, `apply_patch`), Self-repair loop. |
 | **Phase 7** | Verification & Packaging | Unit tests, E2E fixtures, VSIX packaging, Performance audit. |
+
+---
+
+## 7. Roadmap: Architectural Guardrail System (Phase 8+)
+
+Positioning: RailsForge is the Rails-specific intelligence layer that sits
+*alongside* `ruby-lsp` (Ruby syntax/diagnostics) and TypeScript tooling
+(ESLint/Prettier/Tailwind), not a replacement for either — see README
+"Relationship to Ruby LSP". The next phases extend that layer from "useful
+Rails tools" toward keeping developers inside the project's own patterns and
+SOLID/DRY/YAGNI/KISS conventions without opening 5–6 files to check "how did
+we do this before."
+
+**Shipped as of this iteration (regex/heuristic, no new native dependencies):**
+
+- `ProjectPatternIndexer` — indexes `app/services|queries|forms|policies|decorators`
+  and concerns; `railsforge.showSimilarPatterns` command + CodeLens surface the
+  closest existing implementations for a given class.
+- `@rails` agent grounding now includes a summary of existing patterns, with an
+  explicit "search before generating" instruction in the system prompt.
+- `ruby-lsp-addon/` — a companion Ruby gem (`RubyLsp::Addon`) that appends
+  schema-aware hover into `ruby-lsp`'s own responses, proving the
+  ruby-lsp-complementary integration model end to end for one feature slice.
+
+**Not yet implemented — sized for separate follow-up work, roughly in this
+order:**
+
+| Phase | Feature | Why it's separate | Key infra decision |
+| :--- | :--- | :--- | :--- |
+| 8 | Principle diagnostics engine (expand SRP/DRY/YAGNI/KISS/Demeter beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
+| 9 | Cross-file "Related" CodeLens + richer hover (model → services/queries/policies/specs count) | Needs a reverse index (model → dependents), not just forward classification | None — extends current indexers |
+| 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
+| 11 | Dependency/collaborator graph + cycle detection | Needs real AST parsing (constructor params, `include`, calls), not line regex | Requires an AST library decision |
+| 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |
+| 13 | Guided "Extract Service/Query" that also updates all callers + generates a matching spec | Depends on the dependency graph (12) to find callers safely | Builds on 11/12 |
+| 14 | MCP server exposing the semantic index + `.cursor/rules` export | Depends on the index existing (10-12) | New process/protocol surface |
+| 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of the above; can be picked up any time | None |
+
+Phase 12 is called out specifically because `better-sqlite3`/`tree-sitter-ruby`
+are native Node modules — bundling them into a VS Code `.vsix` requires
+per-platform prebuilds and changes the current pure-JS/TS webpack build. That
+tradeoff (index scalability vs. packaging complexity) should be an explicit
+decision, not an incidental side effect of adding search or a dependency
+graph.

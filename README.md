@@ -87,12 +87,26 @@ Dedicated Activity Bar Panel displaying:
 - **Extract to Service Object:** Select business logic in controllers or models and extract it into a clean `app/services/[name]_service.rb` implementing the `ApplicationService.call` pattern.
 - **Extract to Query Object:** Move complex ActiveRecord query chains into `app/queries/[name]_query.rb`.
 
+### 🧩 12. Living Pattern Catalog ("How We Do X Here")
+
+Unlike the static Refactoring Guru catalog (§10), this indexes **your own project's**
+`app/services`, `app/queries`, `app/forms`, `app/policies`, `app/decorators`, and
+concerns as you work:
+
+- **CodeLens on every Service/Query/Form/Policy class:** `📋 N similar patterns in this project`.
+- **`RailsForge: Show Similar Patterns in This Project`** — quick-pick of the closest
+  existing implementations (ranked by name and public-method overlap), so you check for
+  prior art before writing a new `CreateXService` from scratch.
+- **Live re-indexing** on file save/create/delete — no separate build step.
+- Feeds directly into the `@rails` agent's grounding (below), so generated code is
+  steered toward your existing patterns instead of reinventing them.
+
 ### 🤖 11. Grounded Local AI Agent (`@rails`)
 
 Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):
 
 - **Version Anti-Hallucination:** Automatically discovers active Ruby and Rails versions from `Gemfile.lock` and `.ruby-version`, constraining the AI to compatible APIs only.
-- **Context Grounding:** Injects relevant database schema tables, column definitions, and route mappings into prompts.
+- **Context Grounding:** Injects relevant database schema tables, column definitions, route mappings, and a summary of existing Service/Query/Form/Policy patterns into prompts, with an explicit instruction to reuse or extend a close match before generating new code.
 - **Slash Commands in Chat:**
   - `@rails /explain` — Explain complex queries, scopes, and associations.
   - `@rails /service` — Scaffold clean Service Objects with Result monads.
@@ -159,6 +173,39 @@ cursor --install-extension railsforge.vsix
 ```
 
 *Or install manually via VS Code / Cursor Extensions View (`Ctrl+Shift+X`) $\to$ Click `...` $\to$ **Install from VSIX...** $\to$ select `railsforge.vsix`.*
+
+---
+
+## Relationship to Ruby LSP
+
+RailsForge is a **companion to Shopify's `ruby-lsp`**, not a replacement for it.
+Install both:
+
+```json
+// .vscode/extensions.json
+{ "recommendations": ["shopify.ruby-lsp", "nemesis.railsforge"] }
+```
+
+`ruby-lsp` (plus `ruby-lsp-rails`) remains the source of truth for Ruby syntax,
+diagnostics, and go-to-definition. RailsForge adds Rails-specific intelligence
+(schema peek, route search, pattern catalog, principle diagnostics, security
+scans, the local AI agent) on top. For deeper integration, RailsForge also
+ships an optional [`ruby-lsp` add-on gem](./ruby-lsp-addon) that injects schema
+context directly into `ruby-lsp`'s own Hover responses — see
+[`ruby-lsp-addon/README.md`](./ruby-lsp-addon/README.md) for setup and the
+current scope (schema-aware hover today; route-aware completion and
+association-aware navigation are natural next steps on the same scaffold).
+
+## Roadmap
+
+The pattern catalog, principle diagnostics, and `ruby-lsp` add-on above are the
+first slice of a larger "architectural guardrail" direction: project-wide
+semantic search, a dependency/collaborator graph for services, guided
+"Extract Service/Query with caller updates" refactors, and an MCP server so
+any AI client (not just the built-in `@rails` agent) can query RailsForge's
+index. These are tracked in [`PRD.md`](./PRD.md) and are a deliberately
+bigger lift (native indexing, AST parsing) than the current regex/heuristic
+approach — happy to scope any one of them as a follow-up.
 
 ---
 
