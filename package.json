@@ -122,6 +122,11 @@
           "type": "string",
           "default": "qwen2.5-coder:14b",
           "description": "Default Ollama model to use for @rails AI Agent"
+        },
+        "railsForge.ollama.embeddingModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Ollama model used for RailsForge: Semantic Search (must be pulled separately, e.g. `ollama pull nomic-embed-text`). Search falls back to keyword matching if this model or Ollama itself is unavailable."
         }
       }
     },
@@ -204,6 +209,11 @@
       {
         "command": "railsforge.showRelatedFiles",
         "title": "RailsForge: Show Related Files (Services, Queries, Policies, Specs)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.semanticSearch",
+        "title": "RailsForge: Semantic Search (find similar code by meaning)",
         "category": "RailsForge"
       },
       {
