@@ -16,7 +16,7 @@ export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
 
     const code = document.getText()
     const opportunities = this.engine.analyzeCode(code, document.fileName)
-    const diagnostics: vscode.Diagnostic[] = opportunities.map(o => this.toDiagnostic(o))
+    const diagnostics: vscode.Diagnostic[] = opportunities.map(o => this.toDiagnostic(o, document))
 
     this.diagnosticCollection.set(document.uri, diagnostics)
   }
@@ -31,9 +31,11 @@ export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
     })
   }
 
-  private toDiagnostic(opp: PatternOpportunity): vscode.Diagnostic {
+  private toDiagnostic(opp: PatternOpportunity, document: vscode.TextDocument): vscode.Diagnostic {
     const line = Math.max(0, opp.line - 1)
-    const range = new vscode.Range(line, 0, line, 80)
+    const lineText = document.lineAt(line).text
+    const startCol = lineText.length - lineText.trimStart().length
+    const range = new vscode.Range(line, startCol, line, lineText.length)
     const severity = opp.category === 'smell' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information
 
     const diag = new vscode.Diagnostic(range, `💡 [${opp.patternName}] ${opp.title}: ${opp.message}`, severity)
