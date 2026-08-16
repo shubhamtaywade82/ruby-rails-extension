@@ -45,6 +45,10 @@ import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
 import { RailsAgent } from './agent/RailsAgent'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
+import { PersistentIndexManager } from './indexer/PersistentIndexManager'
+import { findDuplicateCallSites } from './refactor/DuplicateCallSiteFinder'
+import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerator'
+import { buildCursorRulesContent } from './mcp/CursorRulesGenerator'
 import { EmbeddingClient } from './search/EmbeddingClient'
 import { SemanticSearchIndex } from './search/SemanticSearchIndex'
 
@@ -123,6 +127,17 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('railsforge.chatView', chatViewProvider),
   )
+
+  // Phase 12: persistent AST/SQLite index (tree-sitter + better-sqlite3, off-thread).
+  // Powers Phase 8 (cross-file duplicate methods) and Phase 11 (dependency cycles) below.
+  // Fails soft: commands check persistentIndex.manager and report "still indexing /
+  // unavailable" rather than the extension crashing if native modules can't load.
+  const persistentIndex: { manager: PersistentIndexManager | null } = { manager: null }
+  if (workspaceRoot) {
+    void PersistentIndexManager.activate(context, workspaceRoot).then(manager => {
+      persistentIndex.manager = manager
+    })
+  }
 
   // 2. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
@@ -222,6 +237,9 @@ export function activate(context: vscode.ExtensionContext): void {
     principleLinter,
     relatedFilesIndex,
     dependencyGraph,
+    persistentIndex,
+    schemaIndexer,
+    env,
     semanticSearchIndex,
   )
 
@@ -387,6 +405,97 @@ function refreshOpenDependencyDiagnostics(dependencyDiagnostics: DependencyDiagn
   }
 }
 
+/**
+ * Phase 13: after extracting a Service/Query, checks whether the exact same code was
+ * copy-pasted elsewhere in the workspace and, if the developer opts in, replaces those
+ * call sites too — added to the same WorkspaceEdit as the primary extraction so it's
+ * one multi-file diff preview, not several separate edits.
+ */
+async function maybeReplaceDuplicateCallSites(
+  edit: vscode.WorkspaceEdit,
+  selection: string,
+  replacementCall: string,
+  excludeUri: vscode.Uri,
+): Promise<void> {
+  const files = await vscode.workspace.findFiles('{app,lib}/**/*.rb', '**/node_modules/**')
+  const contents = new Map<string, string>()
+  for (const file of files) {
+    if (file.fsPath === excludeUri.fsPath) {continue}
+    try {
+      contents.set(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    } catch {
+      // Unreadable file — skip it rather than aborting the whole search.
+    }
+  }
+
+  const duplicates = findDuplicateCallSites(selection, contents, excludeUri.fsPath)
+  if (duplicates.length === 0) {return}
+
+  const choice = await vscode.window.showWarningMessage(
+    `RailsForge: Found ${duplicates.length} other occurrence(s) of this exact code elsewhere in the workspace. Replace them too?`,
+    'Replace All',
+    'Just This One',
+  )
+  if (choice !== 'Replace All') {return}
+
+  for (const dup of duplicates) {
+    const doc = await vscode.workspace.openTextDocument(dup.filePath)
+    const start = doc.positionAt(dup.index)
+    const end = doc.positionAt(dup.index + dup.length)
+    edit.replace(doc.uri, new vscode.Range(start, end), replacementCall)
+  }
+}
+
+/**
+ * Phase 13: generates a companion RSpec skeleton for a newly extracted Service/Query,
+ * added to the same WorkspaceEdit — only when the workspace actually has a spec/
+ * directory, and only if a spec for that file doesn't already exist.
+ */
+function maybeGenerateSpec(
+  edit: vscode.WorkspaceEdit,
+  extractedFilePath: string,
+  root: string,
+  kind: 'service' | 'query',
+  className: string,
+): void {
+  if (!fs.existsSync(path.join(root, 'spec'))) {return}
+
+  const specPath = specFilePathFor(extractedFilePath, root, kind)
+  if (fs.existsSync(specPath)) {return}
+
+  const specUri = vscode.Uri.file(specPath)
+  edit.createFile(specUri, { ignoreIfExists: true })
+  edit.insert(specUri, new vscode.Position(0, 0), buildRspecSkeleton(className, kind, 'call'))
+}
+
+/**
+ * Merge-writes the `railsforge` entry into .cursor/mcp.json without clobbering any
+ * other MCP servers the user already has configured there.
+ */
+function registerMcpServer(root: string, mcpServerPath: string): void {
+  const mcpConfigPath = path.join(root, '.cursor', 'mcp.json')
+  let config: { mcpServers?: Record<string, unknown> } = {}
+  if (fs.existsSync(mcpConfigPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8'))
+    } catch {
+      config = {}
+    }
+  }
+
+  config.mcpServers = {
+    ...config.mcpServers,
+    railsforge: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: { RAILSFORGE_WORKSPACE_ROOT: root },
+    },
+  }
+
+  fs.mkdirSync(path.dirname(mcpConfigPath), { recursive: true })
+  fs.writeFileSync(mcpConfigPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
+}
+
 function loadSchema(root: string, indexer: SchemaIndexer): void {
   const schemaPath = path.join(root, 'db', 'schema.rb')
   if (fs.existsSync(schemaPath)) {
@@ -445,9 +554,91 @@ function registerCommands(
   principleLinter: DesignPrincipleLinter,
   relatedFilesIndex: RelatedFilesIndex,
   dependencyGraph: MinimalDependencyGraph,
+  persistentIndex: { manager: PersistentIndexManager | null },
+  schemaIndexer: SchemaIndexer,
+  env: ProjectEnvironment,
   semanticSearchIndex: SemanticSearchIndex,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
+      const manager = persistentIndex.manager
+      if (!manager) {
+        vscode.window.showWarningMessage('RailsForge: The AST index is still starting up (or unavailable on this platform) — try again shortly.')
+        return
+      }
+      const cycles = manager.dependencyGraph.findCycles()
+      if (cycles.length === 0) {
+        vscode.window.showInformationMessage('RailsForge: No circular dependencies found among indexed services/queries/policies.')
+        return
+      }
+      const lines = cycles.map((cycle, i) => `${i + 1}. ${cycle.join(' → ')}`)
+      const doc = await vscode.workspace.openTextDocument({
+        content: `# RailsForge: Circular Dependencies\n\n${lines.join('\n')}\n`,
+        language: 'markdown',
+      })
+      await vscode.window.showTextDocument(doc)
+    }),
+    vscode.commands.registerCommand('railsforge.findDuplicateMethods', async () => {
+      const manager = persistentIndex.manager
+      if (!manager) {
+        vscode.window.showWarningMessage('RailsForge: The AST index is still starting up (or unavailable on this platform) — try again shortly.')
+        return
+      }
+      const duplicates = manager.duplicateDetector.findDuplicates()
+      if (duplicates.length === 0) {
+        vscode.window.showInformationMessage('RailsForge: No near-duplicate methods found.')
+        return
+      }
+      const items = duplicates.map(d => ({
+        label: `${Math.round(d.similarity * 100)}% similar: ${d.a.name} ↔ ${d.b.name}`,
+        description: `${vscode.workspace.asRelativePath(d.a.filePath)}:${d.a.startLine} ↔ ${vscode.workspace.asRelativePath(d.b.filePath)}:${d.b.startLine}`,
+        pair: d,
+      }))
+      const selected = await vscode.window.showQuickPick(items, { placeHolder: 'Near-duplicate methods (consider extracting a shared concern/method)' })
+      if (!selected) {return}
+
+      const doc = await vscode.workspace.openTextDocument(selected.pair.a.filePath)
+      const editor = await vscode.window.showTextDocument(doc)
+      const pos = new vscode.Position(Math.max(0, selected.pair.a.startLine - 1), 0)
+      editor.selection = new vscode.Selection(pos, pos)
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
+    }),
+    vscode.commands.registerCommand('railsforge.exportCursorRules', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+
+      const mcpServerPath = path.join(context.extensionPath, 'dist', 'mcp', 'server.js')
+      const mcpServerAvailable = fs.existsSync(mcpServerPath)
+
+      const content = buildCursorRulesContent({
+        rubyVersion: env.rubyVersion,
+        railsVersion: env.hasRails ? env.railsVersion : undefined,
+        hasRails: env.hasRails,
+        tables: schemaIndexer.getAllTables(),
+        routes: routes.getAllRoutes(),
+        patterns: projectPatternIndexer.getAllPatterns(),
+        mcpServerAvailable,
+      })
+
+      const rulesDir = path.join(root, '.cursor', 'rules')
+      fs.mkdirSync(rulesDir, { recursive: true })
+      fs.writeFileSync(path.join(rulesDir, 'railsforge.mdc'), content, 'utf8')
+
+      if (mcpServerAvailable) {
+        registerMcpServer(root, mcpServerPath)
+      }
+
+      const doc = await vscode.workspace.openTextDocument(path.join(rulesDir, 'railsforge.mdc'))
+      await vscode.window.showTextDocument(doc)
+      vscode.window.showInformationMessage(
+        mcpServerAvailable
+          ? 'RailsForge: Exported .cursor/rules/railsforge.mdc and registered the railsforge MCP server in .cursor/mcp.json.'
+          : 'RailsForge: Exported .cursor/rules/railsforge.mdc.',
+      )
+    }),
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
       const document = await vscode.workspace.openTextDocument(uri)
       const code = document.getText(range)
@@ -674,12 +865,16 @@ function registerCommands(
 
       // Single WorkspaceEdit so VS Code shows one multi-file diff preview: only the
       // selected range in the original file changes, plus the new service file — nothing
-      // else in the controller/model is touched.
+      // else in the controller/model is touched (unless the developer opts into replacing
+      // other exact duplicates of this same selection, below).
       const edit = new vscode.WorkspaceEdit()
       const serviceUri = vscode.Uri.file(res.serviceFilePath)
       edit.createFile(serviceUri, { ignoreIfExists: true })
       edit.insert(serviceUri, new vscode.Position(0, 0), res.serviceCode)
       edit.replace(editor.document.uri, editor.selection, res.replacementCall)
+
+      await maybeReplaceDuplicateCallSites(edit, selection, res.replacementCall, editor.document.uri)
+      maybeGenerateSpec(edit, res.serviceFilePath, root, 'service', res.replacementCall.split('.')[0])
 
       const applied = await vscode.workspace.applyEdit(edit)
       if (!applied) {
@@ -703,8 +898,23 @@ function registerCommands(
       if (!model) {return}
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
       const res = queryExtractor.extractQuery(name, model, selection, [], root)
-      queryExtractor.saveQueryFile(res.queryFilePath, res.queryCode)
-      await editor.edit(edit => edit.replace(editor.selection, res.replacementCall))
+
+      const edit = new vscode.WorkspaceEdit()
+      const queryUri = vscode.Uri.file(res.queryFilePath)
+      edit.createFile(queryUri, { ignoreIfExists: true })
+      edit.insert(queryUri, new vscode.Position(0, 0), res.queryCode)
+      edit.replace(editor.document.uri, editor.selection, res.replacementCall)
+
+      await maybeReplaceDuplicateCallSites(edit, selection, res.replacementCall, editor.document.uri)
+      maybeGenerateSpec(edit, res.queryFilePath, root, 'query', res.replacementCall.split('.')[0])
+
+      const applied = await vscode.workspace.applyEdit(edit)
+      if (!applied) {
+        vscode.window.showErrorMessage('RailsForge: Failed to apply Extract Query edit.')
+        return
+      }
+      const doc = await vscode.workspace.openTextDocument(res.queryFilePath)
+      await vscode.window.showTextDocument(doc)
     }),
     vscode.commands.registerCommand('railsforge.goToPolicy', () => {
       const editor = vscode.window.activeTextEditor
