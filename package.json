@@ -7,8 +7,12 @@
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shubhamtaywade82/railsforge"
+    "url": "https://github.com/shubhamtaywade82/ruby-rails-extension"
   },
+  "bugs": {
+    "url": "https://github.com/shubhamtaywade82/ruby-rails-extension/issues"
+  },
+  "homepage": "https://github.com/shubhamtaywade82/ruby-rails-extension#readme",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20"
