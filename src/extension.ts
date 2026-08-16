@@ -49,6 +49,8 @@ import { PersistentIndexManager } from './indexer/PersistentIndexManager'
 import { findDuplicateCallSites } from './refactor/DuplicateCallSiteFinder'
 import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerator'
 import { buildCursorRulesContent } from './mcp/CursorRulesGenerator'
+import { EmbeddingClient } from './search/EmbeddingClient'
+import { SemanticSearchIndex } from './search/SemanticSearchIndex'
 
 export function activate(context: vscode.ExtensionContext): void {
   const schemaIndexer = new SchemaIndexer()
@@ -97,16 +99,23 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'railsforge.hasViewComponent', env.hasViewComponent)
 
   const config = vscode.workspace.getConfiguration('railsForge')
+  const ollamaHost = config.get<string>('ollama.host', 'http://localhost:11434')
   const agent = new RailsAgent(
     schemaIndexer,
     routesIndexer,
     {
-      ollamaHost: config.get<string>('ollama.host', 'http://localhost:11434'),
+      ollamaHost,
       model: config.get<string>('ollama.model', 'qwen2.5-coder:14b'),
     },
     env,
     projectPatternIndexer,
   )
+
+  const embeddingClient = new EmbeddingClient({
+    ollamaHost,
+    model: config.get<string>('ollama.embeddingModel', 'nomic-embed-text'),
+  })
+  const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text))
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
   const chatViewProvider = new RailsChatViewProvider(
@@ -137,10 +146,10 @@ export function activate(context: vscode.ExtensionContext): void {
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
     factoryBotResolver.indexFactories(workspaceRoot)
     patternDiagnostics.scanWorkspace()
-    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
-    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider)
+    watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
   }
 
@@ -231,6 +240,7 @@ export function activate(context: vscode.ExtensionContext): void {
     persistentIndex,
     schemaIndexer,
     env,
+    semanticSearchIndex,
   )
 
   // 5. Register Chat Participant
@@ -293,6 +303,7 @@ async function loadProjectPatterns(
   dependencyGraph: MinimalDependencyGraph,
   dependencyDiagnostics: DependencyDiagnosticsProvider,
   relatedCodeLensProvider: RelatedCodeLensProvider,
+  semanticSearchIndex: SemanticSearchIndex,
 ): Promise<void> {
   // Matches both app/services/**/*.rb (Rails) and lib/**/services/**/*.rb (a gem/script
   // with no app/ directory), since ProjectPatternIndexer.classifyPath now matches the
@@ -317,6 +328,7 @@ async function loadProjectPatterns(
   dependencyGraph.rebuild()
   refreshOpenDependencyDiagnostics(dependencyDiagnostics)
   relatedCodeLensProvider.refresh()
+  semanticSearchIndex.pruneStale()
 }
 
 async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): Promise<void> {
@@ -357,6 +369,7 @@ function watchPatternFiles(
   dependencyGraph: MinimalDependencyGraph,
   dependencyDiagnostics: DependencyDiagnosticsProvider,
   relatedCodeLensProvider: RelatedCodeLensProvider,
+  semanticSearchIndex: SemanticSearchIndex,
 ): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
@@ -371,6 +384,7 @@ function watchPatternFiles(
     dependencyGraph.rebuild()
     refreshOpenDependencyDiagnostics(dependencyDiagnostics)
     relatedCodeLensProvider.refresh()
+    semanticSearchIndex.pruneStale()
   }
   watcher.onDidChange(reindex)
   watcher.onDidCreate(reindex)
@@ -379,6 +393,7 @@ function watchPatternFiles(
     codeLensProvider.refresh()
     dependencyGraph.rebuild()
     refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+    semanticSearchIndex.pruneStale()
     relatedCodeLensProvider.refresh()
   })
   context.subscriptions.push(watcher)
@@ -542,6 +557,7 @@ function registerCommands(
   persistentIndex: { manager: PersistentIndexManager | null },
   schemaIndexer: SchemaIndexer,
   env: ProjectEnvironment,
+  semanticSearchIndex: SemanticSearchIndex,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
@@ -738,6 +754,43 @@ function registerCommands(
         editor.selection = new vscode.Selection(pos, pos)
         editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
       }
+    }),
+    vscode.commands.registerCommand('railsforge.semanticSearch', async () => {
+      const query = await vscode.window.showInputBox({
+        prompt: 'RailsForge Semantic Search — describe what you\'re looking for (e.g. "charge a card", "send a welcome email")',
+        placeHolder: 'What are you looking for?',
+      })
+      if (!query) {return}
+
+      const results = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge: Searching…' },
+        () => semanticSearchIndex.search(query),
+      )
+
+      if (results.length === 0) {
+        vscode.window.showInformationMessage(`RailsForge: No matches found for "${query}".`)
+        return
+      }
+
+      const items = results.map(r => ({
+        label: `${r.matchedBy === 'semantic' ? '🧠' : '🔤'} ${r.pattern.name}`,
+        description: `${r.pattern.type} · ${vscode.workspace.asRelativePath(r.pattern.filePath)}`,
+        detail: r.pattern.preview.split('\n').find(l => l.trim().length > 0)?.trim(),
+        result: r,
+      }))
+
+      const selected = await vscode.window.showQuickPick(items, {
+        placeHolder: `Results for "${query}" (🧠 semantic · 🔤 keyword fallback)`,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      })
+      if (!selected) {return}
+
+      const doc = await vscode.workspace.openTextDocument(selected.result.pattern.filePath)
+      const editor = await vscode.window.showTextDocument(doc)
+      const pos = new vscode.Position(Math.max(0, selected.result.pattern.lineStart - 1), 0)
+      editor.selection = new vscode.Selection(pos, pos)
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
     }),
     vscode.commands.registerCommand('railsforge.scanWorkspaceArchitecture', () => {
       patternDiagnostics.scanWorkspace()

@@ -257,6 +257,21 @@ we do this before."
   SRP check now also fires in `lib/` (generic "split this up" message, no
   Rails-specific quick fix) instead of being silently scoped to `app/models`
   and `app/controllers` only.
+- **Semantic code search** (`src/search/`): `EmbeddingClient` calls Ollama's
+  `/api/embeddings` endpoint against a separate, configurable embedding model
+  (`railsForge.ollama.embeddingModel`, default `nomic-embed-text`) — reusing
+  the same host/fetch approach as `RailsAgent`, no new dependency.
+  `SemanticSearchIndex` caches one vector per pattern in memory (keyed by
+  file path + line + preview, so it re-embeds only when a pattern's content
+  actually changes) and ranks results by cosine similarity; `pruneStale()` is
+  called from the same file-watcher hooks that already rebuild
+  `MinimalDependencyGraph`. When the embedding model/Ollama is unavailable it
+  falls back to token-overlap keyword search over name/public-methods/preview
+  — same "degrade, don't break" pattern as the rest of the AI-adjacent
+  features. `railsforge.semanticSearch` exposes it as a command. This is
+  Phase 10 below, done — chose the "no vector DB" path explicitly instead of
+  FTS5/sqlite-vss, consistent with staying dependency-light until Phase 12 is
+  revisited.
 
 **Also shipped: Phases 8, 11, 12, 13, 14 (AST-backed analysis, `src/indexer/`, `src/mcp/`).**
 The user explicitly signed off on the Phase 12 native-dependency tradeoff (asked
@@ -357,7 +372,10 @@ just reasoned about.
 
 **Still not implemented:**
 
+Phase 10 (semantic code search, Ollama embeddings — see `src/search/`) shipped
+independently on `claude/semantic-code-search` and has since merged to
+`master`. That leaves only:
+
 | Phase | Feature | Why it's separate | Key infra decision |
 | :--- | :--- | :--- | :--- |
-| 10 | Semantic code search ("find where we charge a card") | Shipped independently on `claude/semantic-code-search` (PR pending merge at time of writing) using Ollama embeddings, not part of this AST/SQLite index | N/A — already resolved on that branch |
 | 15 | Stimulus ↔ TypeScript cross-linking (Cmd+Click between `data-controller` and the `.ts` file) | Independent of everything above; can be picked up any time | None |
