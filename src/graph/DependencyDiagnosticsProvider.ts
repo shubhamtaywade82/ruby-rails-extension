@@ -59,12 +59,25 @@ export class DependencyDiagnosticsProvider implements vscode.CodeActionProvider 
         vscode.CodeActionKind.Refactor,
       )
       const edit = this.buildInjectionEdit(document, collaborator)
-      if (!edit) {continue}
-      action.edit = edit
-      actions.push(action)
+      if (edit) {
+        action.edit = edit
+        actions.push(action)
+      }
+
+      actions.push(this.askRailsAction(diag))
     }
 
     return actions
+  }
+
+  private askRailsAction(diag: vscode.Diagnostic): vscode.CodeAction {
+    const action = new vscode.CodeAction('$(sparkle) Ask @rails to fix this', vscode.CodeActionKind.QuickFix)
+    action.command = {
+      command: 'workbench.action.chat.open',
+      title: 'Ask @rails',
+      arguments: [{ query: `@rails /fix ${diag.message}` }],
+    }
+    return action
   }
 
   /**

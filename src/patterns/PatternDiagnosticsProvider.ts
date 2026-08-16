@@ -79,9 +79,21 @@ export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
         const fix = new vscode.CodeAction('⚡ Refactor: Replace with Dependency Injection', vscode.CodeActionKind.QuickFix)
         actions.push(fix)
       }
+
+      actions.push(this.askRailsAction(diag))
     }
 
     return actions
+  }
+
+  private askRailsAction(diag: vscode.Diagnostic): vscode.CodeAction {
+    const action = new vscode.CodeAction('$(sparkle) Ask @rails to fix this', vscode.CodeActionKind.QuickFix)
+    action.command = {
+      command: 'workbench.action.chat.open',
+      title: 'Ask @rails',
+      arguments: [{ query: `@rails /fix ${diag.message}` }],
+    }
+    return action
   }
 
   dispose(): void {
