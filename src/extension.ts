@@ -135,7 +135,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, rubocopProvider),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, migrationDiagnostics),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, deprecationLinter),
-    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, principleLinter),
+    vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, principleLinter, {
+      providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorExtract],
+    }),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, patternDiagnostics),
     vscode.languages.registerCompletionItemProvider(
       ['erb', 'html', 'ruby'],
@@ -187,6 +189,8 @@ export function activate(context: vscode.ExtensionContext): void {
     serviceExtractor,
     queryExtractor,
     projectPatternIndexer,
+    agent,
+    principleLinter,
   )
 
   // 5. Register Chat Participant
@@ -346,8 +350,54 @@ function registerCommands(
   serviceExtractor: ServiceExtractor,
   queryExtractor: QueryExtractor,
   projectPatternIndexer: ProjectPatternIndexer,
+  agent: RailsAgent,
+  principleLinter: DesignPrincipleLinter,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
+      const document = await vscode.workspace.openTextDocument(uri)
+      const code = document.getText(range)
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
+        async () => {
+          const fixed = await agent.suggestCodeFix(code, diagnosticMessage, {
+            fileName: document.fileName,
+            fileContent: document.getText(),
+            selection: code,
+            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+          })
+
+          if (!fixed) {
+            vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running).')
+            return
+          }
+
+          const edit = new vscode.WorkspaceEdit()
+          edit.replace(uri, range, fixed)
+          await vscode.workspace.applyEdit(edit)
+          vscode.window.showInformationMessage('RailsForge: AI fix applied.')
+        },
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.fixAllInFile', async (uri?: vscode.Uri) => {
+      const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri
+      if (!targetUri) {return}
+      const document = await vscode.workspace.openTextDocument(targetUri)
+      const diagnostics = vscode.languages.getDiagnostics(targetUri).filter(d => d.source === 'RailsForge Principles')
+
+      let applied = 0
+      for (const diag of diagnostics) {
+        const codeActionContext: vscode.CodeActionContext = { diagnostics: [diag], only: undefined, triggerKind: vscode.CodeActionTriggerKind.Invoke }
+        const actions = principleLinter.provideCodeActions(document, diag.range, codeActionContext)
+        const deterministic = actions.find(a => a.edit && !a.command)
+        if (deterministic?.edit) {
+          await vscode.workspace.applyEdit(deterministic.edit)
+          applied++
+        }
+      }
+      vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+    }),
     vscode.commands.registerCommand('railsforge.showSimilarPatterns', async (filePath: string, line: number) => {
       const pattern = projectPatternIndexer.findPatternAt(filePath, line)
       if (!pattern) {

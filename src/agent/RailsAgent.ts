@@ -78,6 +78,27 @@ export class RailsAgent {
     }
   }
 
+  /**
+   * Asks the local model to rewrite `code` so it no longer triggers `diagnosticMessage`.
+   * Returns null (never throws) if the model is unreachable or the response isn't usable,
+   * so callers can show a clean "AI fix unavailable" message instead of a stack trace.
+   */
+  async suggestCodeFix(code: string, diagnosticMessage: string, context: RailsAgentContext): Promise<string | null> {
+    const instruction = [
+      `Fix the following Ruby code so it no longer triggers this issue: "${diagnosticMessage}".`,
+      'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
+      'Respond with ONLY the corrected Ruby code. No explanation, no markdown code fences.',
+      '',
+      code,
+    ].join('\n')
+
+    const result = await this.run(instruction, context)
+    if (!result.success) {return null}
+
+    const cleaned = result.response.trim().replace(/^```(?:ruby)?\n?/, '').replace(/\n?```$/, '')
+    return cleaned.length > 0 ? cleaned : null
+  }
+
   async healthCheck(): Promise<boolean> {
     try {
       const url = `${this.config.ollamaHost.replace(/\/$/, '')}/api/tags`

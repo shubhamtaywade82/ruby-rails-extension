@@ -17,6 +17,7 @@ describe('DesignPrincipleLinter', () => {
     expect(list.length).toBe(1)
     expect(list[0].id).toBe('DEMETER-VIOLATION')
     expect(list[0].line).toBe(2)
+    expect(list[0].demeter).toEqual({ receiver: 'user', method: 'city' })
   })
 
   it('flags dynamic metaprogramming for KISS principle', () => {
@@ -54,5 +55,7 @@ describe('DesignPrincipleLinter', () => {
 
     expect(list.length).toBe(1)
     expect(list[0].id).toBe('YAGNI-UNUSED-PRIVATE')
+    expect(list[0].line).toBe(6)
+    expect(list[0].endLine).toBe(8)
   })
 })

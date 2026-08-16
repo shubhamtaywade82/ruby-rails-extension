@@ -191,6 +191,11 @@
     },
     "commands": [
       {
+        "command": "railsforge.fixAllInFile",
+        "title": "RailsForge: Fix All Deterministic Principle Violations in File",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.showSimilarPatterns",
         "title": "RailsForge: Show Similar Patterns in This Project",
         "category": "RailsForge"
