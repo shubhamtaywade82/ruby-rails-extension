@@ -143,6 +143,25 @@ apps — and adjusts what it claims accordingly:
   Hotwire/Stimulus tooling need `db/schema.rb`/`config/routes.rb`/`app/` structure that a
   plain gem or script doesn't have, and simply do nothing rather than error.
 
+### 🧠 15. Semantic Code Search
+
+**`RailsForge: Semantic Search`** — find existing code by *meaning*, not just name:
+type "charge a card" or "send a welcome email" and get ranked matches across your
+indexed Services/Queries/Policies/Forms/Decorators, even when the class name doesn't
+contain your words.
+
+- **Embedding-based when available:** uses a local Ollama embedding model
+  (`railsForge.ollama.embeddingModel`, default `nomic-embed-text` — pull it separately
+  with `ollama pull nomic-embed-text`) to rank results by cosine similarity. Embeddings
+  are cached in memory per pattern and only recomputed when that pattern's content
+  actually changes — no SQLite/vector DB dependency.
+- **Automatic keyword fallback:** if Ollama or the embedding model isn't available,
+  search transparently falls back to token-overlap keyword matching over pattern names,
+  public methods, and preview text, so the command always returns something useful
+  instead of failing outright. Results are labeled 🧠 (semantic) or 🔤 (keyword) so you
+  know which mode answered.
+- Select a result to jump straight to that file and line.
+
 ### 🤖 11. Grounded Local AI Agent (`@rails`)
 
 Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):

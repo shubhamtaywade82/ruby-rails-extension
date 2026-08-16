@@ -257,6 +257,21 @@ we do this before."
   SRP check now also fires in `lib/` (generic "split this up" message, no
   Rails-specific quick fix) instead of being silently scoped to `app/models`
   and `app/controllers` only.
+- **Semantic code search** (`src/search/`): `EmbeddingClient` calls Ollama's
+  `/api/embeddings` endpoint against a separate, configurable embedding model
+  (`railsForge.ollama.embeddingModel`, default `nomic-embed-text`) — reusing
+  the same host/fetch approach as `RailsAgent`, no new dependency.
+  `SemanticSearchIndex` caches one vector per pattern in memory (keyed by
+  file path + line + preview, so it re-embeds only when a pattern's content
+  actually changes) and ranks results by cosine similarity; `pruneStale()` is
+  called from the same file-watcher hooks that already rebuild
+  `MinimalDependencyGraph`. When the embedding model/Ollama is unavailable it
+  falls back to token-overlap keyword search over name/public-methods/preview
+  — same "degrade, don't break" pattern as the rest of the AI-adjacent
+  features. `railsforge.semanticSearch` exposes it as a command. This is
+  Phase 10 below, done — chose the "no vector DB" path explicitly instead of
+  FTS5/sqlite-vss, consistent with staying dependency-light until Phase 12 is
+  revisited.
 
 **Not yet implemented — sized for separate follow-up work, roughly in this
 order:**
@@ -264,7 +279,6 @@ order:**
 | Phase | Feature | Why it's separate | Key infra decision |
 | :--- | :--- | :--- | :--- |
 | 8 | Principle diagnostics engine (expand DRY beyond current heuristics; near-duplicate method detection) | Reuses existing `DesignPrincipleLinter`/`PatternDiagnosticsProvider` scaffolding; mostly incremental | None — stays regex/AST-light |
-| 10 | Semantic code search ("find where we charge a card") | Needs either embeddings (Ollama `nomic-embed-text` or similar) or FTS5 | Requires choosing an embedding/index strategy |
 | 11 | Cycle detection + richer dependency graph (currently: hard-coded-collaborator + caller lookups only, regex-based) | `MinimalDependencyGraph` shipped this iteration; cycle detection and multi-hop analysis want real AST parsing (constructor params, `include`, nested calls) for reliability at scale | Requires an AST library decision |
 | 12 | SQLite-backed semantic index + worker-thread indexing | Only worth it once search/graph need persistence and background reparsing at scale | **Adds a native dependency** (`better-sqlite3` and/or `tree-sitter`) — changes VS Code extension packaging (native module bundling, per-platform prebuilds); needs explicit sign-off before adopting |
 | 13 | Guided "Extract Service/Query" that also updates all callers across files + generates a matching spec | Current Extract Service only replaces the local selection; updating callers elsewhere needs the caller index from Phase 11 to be reliable | Builds on 11/12 |
