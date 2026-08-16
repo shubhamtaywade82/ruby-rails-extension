@@ -21,6 +21,7 @@ import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { ProjectPatternIndexer, PatternType } from '../patterns/ProjectPatternIndexer'
 import { openIndexDatabase } from '../indexer/database'
+import { isPersistentIndexSupported } from '../indexer/nativeSupport'
 import { PersistentDependencyGraph } from '../indexer/PersistentDependencyGraph'
 import { DuplicateMethodDetector } from '../indexer/DuplicateMethodDetector'
 
@@ -72,6 +73,11 @@ function walkRubyFiles(dir: string, onFile: (filePath: string) => void): void {
 }
 
 function openPersistentDbReadonly() {
+  // Must come before the require('better-sqlite3') inside openIndexDatabase — see
+  // database.ts's doc comment on why an unsupported runtime can't be recovered from
+  // via try/catch.
+  if (!isPersistentIndexSupported()) {return null}
+
   const dbPath = path.join(workspaceRoot, '.railsforge', 'index.sqlite3')
   if (!fs.existsSync(dbPath)) {return null}
   try {

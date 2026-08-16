@@ -6,14 +6,33 @@
  * from separate `Database` connections to the same file, which is why the worker and
  * the main thread each open their own connection rather than sharing one across the
  * thread boundary (better-sqlite3 connections aren't thread-safe to share directly).
+ *
+ * `better-sqlite3`'s N-API build (all published versions, 13.0.0+) hardcodes
+ * NAPI_VERSION=10, which only Node >= 22.14 (or an Electron built on it) supports —
+ * loading it on an older runtime doesn't throw a catchable JS error, it calls
+ * `napi_fatal_error` and aborts the *entire process* at the native level. That's why
+ * `require('better-sqlite3')` here is deliberately lazy (inside the function body, not
+ * at module top-level): merely *importing* this file must never touch the native
+ * module. `PersistentIndexManager.isSupported()` gates the actual call.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Database = require('better-sqlite3')
+export interface SqliteStatement {
+  run(...params: unknown[]): unknown
+  get(...params: unknown[]): unknown
+  all(...params: unknown[]): unknown[]
+}
 
-export type SqliteDatabase = InstanceType<typeof Database>
+export interface SqliteDatabase {
+  prepare(sql: string): SqliteStatement
+  exec(sql: string): void
+  pragma(pragma: string): unknown
+  transaction<T extends (...args: never[]) => unknown>(fn: T): T
+  close(): void
+}
 
 export function openIndexDatabase(dbPath: string, readonly = false): SqliteDatabase {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const Database = require('better-sqlite3')
   const db: SqliteDatabase = new Database(dbPath, { readonly, fileMustExist: readonly })
   if (!readonly) {
     // WAL is meaningless for :memory: databases (used throughout the test suite) —

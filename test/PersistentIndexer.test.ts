@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { openIndexDatabase } from '../src/indexer/database'
 import { indexFileIntoDb, removeFileFromDb } from '../src/indexer/PersistentIndexer'
 import { RubyAstParser } from '../src/indexer/RubyAstParser'
+import { isPersistentIndexSupported } from '../src/indexer/nativeSupport'
 
 const parser = new RubyAstParser()
 
@@ -25,7 +26,10 @@ class CreateOrderService < ApplicationService
 end
 `
 
-describe('PersistentIndexer', () => {
+// better-sqlite3's N-API build requires Node >= 22.14 (N-API version 10) — loading it
+// on an older runtime aborts the process rather than throwing, so this whole suite is
+// skipped there instead of crashing the test run. See src/indexer/database.ts.
+describe.skipIf(!isPersistentIndexSupported())('PersistentIndexer', () => {
   it('inserts a symbol row per class with its includes/superclass', () => {
     const db = freshDb()
     indexFileIntoDb(db, '/repo/app/services/create_order_service.rb', createOrderService, parser)

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { openIndexDatabase } from '../src/indexer/database'
 import { PersistentDependencyGraph } from '../src/indexer/PersistentDependencyGraph'
+import { isPersistentIndexSupported } from '../src/indexer/nativeSupport'
 
 function seedEdges(db: ReturnType<typeof openIndexDatabase>, edges: Array<{ from: string; to: string; hardCoded?: boolean }>) {
   const insert = db.prepare(`
@@ -12,7 +13,9 @@ function seedEdges(db: ReturnType<typeof openIndexDatabase>, edges: Array<{ from
   }
 }
 
-describe('PersistentDependencyGraph', () => {
+// See src/indexer/database.ts: better-sqlite3 requires Node >= 22.14, and loading it
+// on an older runtime aborts the process rather than throwing a catchable error.
+describe.skipIf(!isPersistentIndexSupported())('PersistentDependencyGraph', () => {
   it('returns collaborators and callers for a symbol', () => {
     const db = openIndexDatabase(':memory:')
     seedEdges(db, [{ from: 'CreateOrderService', to: 'PaymentGatewayService' }])

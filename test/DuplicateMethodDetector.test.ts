@@ -3,6 +3,7 @@ import { openIndexDatabase } from '../src/indexer/database'
 import { indexFileIntoDb } from '../src/indexer/PersistentIndexer'
 import { RubyAstParser } from '../src/indexer/RubyAstParser'
 import { DuplicateMethodDetector } from '../src/indexer/DuplicateMethodDetector'
+import { isPersistentIndexSupported } from '../src/indexer/nativeSupport'
 
 const parser = new RubyAstParser()
 
@@ -39,7 +40,9 @@ class ChargeCardService < ApplicationService
 end
 `
 
-describe('DuplicateMethodDetector', () => {
+// See src/indexer/database.ts: better-sqlite3 requires Node >= 22.14, and loading it
+// on an older runtime aborts the process rather than throwing a catchable error.
+describe.skipIf(!isPersistentIndexSupported())('DuplicateMethodDetector', () => {
   it('flags two methods with highly similar token content as duplicates', () => {
     const db = openIndexDatabase(':memory:')
     indexFileIntoDb(db, '/repo/app/services/send_welcome_email_service.rb', sendWelcomeEmail, parser)

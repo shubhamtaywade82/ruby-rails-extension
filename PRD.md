@@ -308,21 +308,52 @@ unavailable" rather than crashing).
   any other servers already configured there.
 
 **Packaging**: `better-sqlite3`/`tree-sitter`/`tree-sitter-ruby` are N-API
-based with prebuilt binaries for macOS/Linux/Windows × x64/arm64 — verified
-these load correctly both in a plain Node process and when required from the
-packaged `dist/` layout (no Electron-specific rebuild needed, since N-API is
-ABI-stable). Webpack externalizes them and a `CopyWebpackPlugin` config copies
-only the runtime-necessary files (prebuilds + JS glue, not the C/C++ source
-trees used solely for compiling from scratch — that cut ~60MB down to ~30MB
-uncompressed) into `dist/node_modules/`, dereferencing pnpm's symlinks (`vsce`'s
-default dependency-pruning shells out to `npm ls`, which chokes on pnpm's
-node_modules layout — confirmed by testing it directly). Verified end-to-end:
-`vsce package --no-dependencies` produces a working ~11MB `.vsix` with `dist/`
-containing `extension.js`, `indexer/indexer.worker.js`, `mcp/server.js`, and
-`node_modules/` for the three native packages; smoke-tested the worker
-(index → SQLite write → read back from a separate connection) and the MCP
-server (spawned via stdio, `tools/list` + `tools/call` round-trips) directly
-against the compiled `dist/` output, not just the TypeScript sources.
+based with prebuilt binaries for macOS/Linux/Windows × x64/arm64 — N-API's
+ABI stability means one prebuild per platform/arch works across Node
+*and* Electron without a separate rebuild, which is what makes shipping
+them in a `.vsix` tractable at all. Webpack externalizes them and a
+`CopyWebpackPlugin` config copies only the runtime-necessary files
+(prebuilds + JS glue, not the C/C++ source trees used solely for compiling
+from scratch — that cut ~60MB down to ~30MB uncompressed) into
+`dist/node_modules/`, dereferencing pnpm's symlinks (`vsce`'s default
+dependency-pruning shells out to `npm ls`, which chokes on pnpm's
+node_modules layout — confirmed by testing it directly). Verified
+end-to-end: `vsce package --no-dependencies` produces a working ~11MB
+`.vsix` with `dist/` containing `extension.js`, `indexer/indexer.worker.js`,
+`mcp/server.js`, and `node_modules/` for the three native packages;
+smoke-tested the worker (index → SQLite write → read back from a separate
+connection) and the MCP server (spawned via stdio, `tools/list` +
+`tools/call` round-trips) directly against the compiled `dist/` output.
+
+**Critical caveat found via CI (not caught locally at first)**: ABI stability
+only holds *within* the N-API version an addon requests. `better-sqlite3`
+13.0.0–13.0.3 (every published N-API release, no lower-`NAPI_VERSION` build
+exists) hardcodes `NAPI_VERSION=10`, which Node only backported to >= 22.14 /
+23.6 — Node 20.x (confirmed directly: a real Node 20.20.2 binary reports
+`process.versions.napi === '9'`) cannot load it. Worse, the failure mode
+isn't a catchable JS exception — an addon requesting an unsupported N-API
+version triggers `napi_fatal_error`, which aborts the *entire process*
+immediately, so no `try/catch` around `PersistentIndexManager.activate()`
+can protect against it. Since `database.ts` originally did
+`const Database = require('better-sqlite3')` at module top level, merely
+*importing* it (which happens transitively the moment `extension.ts` loads,
+regardless of whether Phase 12 features are ever used) would have crashed
+the whole extension host on any VS Code build whose Electron bundles
+Node < 22.14 — a real risk given RailsForge's stated target platforms (VS
+Code, Cursor, VSCodium, Windsurf) don't all track the same Electron/Node
+version. Fixed with two changes: (1) `database.ts`'s `require('better-sqlite3')`
+moved inside the function body (lazy — importing the module now touches
+nothing native), and (2) `src/indexer/nativeSupport.ts`'s
+`isPersistentIndexSupported()` (checks `process.versions.napi >= 10`) gates
+every call site that would otherwise reach it — `PersistentIndexManager.activate()`
+and the MCP server's `openPersistentDbReadonly()` — *before* that lazy
+require ever executes, so an incompatible runtime degrades to "Phase
+8/11/13/14 disabled" instead of crashing. The three SQLite-backed test files
+use `describe.skipIf(!isPersistentIndexSupported())` for the same reason.
+Verified by downloading a real Node v20.20.2 Linux x64 binary and running
+the actual test suite against it: the 3 gated suites skip cleanly (15 tests),
+all 59 others still pass — confirmed with the *real* CI Node version, not
+just reasoned about.
 
 **Still not implemented:**
 

@@ -17,6 +17,7 @@ import * as path from 'path'
 import { PersistentIndexClient } from './PersistentIndexClient'
 import { PersistentDependencyGraph } from './PersistentDependencyGraph'
 import { DuplicateMethodDetector } from './DuplicateMethodDetector'
+import { isPersistentIndexSupported } from './nativeSupport'
 
 const INDEXED_GLOB = '{app,lib}/**/*.rb'
 const EXCLUDE_GLOB = '**/{node_modules,vendor,spec,test}/**'
@@ -35,6 +36,15 @@ export class PersistentIndexManager implements vscode.Disposable {
 
   static async activate(context: vscode.ExtensionContext, workspaceRoot: string): Promise<PersistentIndexManager | null> {
     if (!workspaceRoot) {return null}
+
+    // Must run before anything in this call touches better-sqlite3, directly or
+    // transitively (see database.ts's doc comment) — on an unsupported runtime,
+    // loading that native module aborts the whole process, which no try/catch below
+    // can protect against.
+    if (!isPersistentIndexSupported()) {
+      console.warn(`RailsForge: persistent AST index needs a Node runtime with N-API >= 10 (this one reports ${process.versions.napi ?? 'none'}) — Phase 8/11/13/14 features disabled.`)
+      return null
+    }
 
     try {
       // Workspace-local (not VS Code's opaque per-workspace global storage) so the

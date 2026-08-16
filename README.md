@@ -255,8 +255,12 @@ real Ruby parsing (`tree-sitter-ruby`) and persisted to a workspace-local
 `.railsforge/index.sqlite3` (gitignore it, like any other local cache) so it
 survives VS Code restarts instead of rebuilding from scratch. Indexing runs in
 a `worker_threads` worker, never on the extension host's own thread. Fails
-soft: if the native modules can't load on some platform, these features
-silently disable themselves — nothing else in RailsForge is affected.
+soft: if the native modules can't load on some platform *or Node/Electron
+version* — `better-sqlite3` specifically requires Node >= 22.14 (checked via
+`process.versions.napi` before ever touching the module, since an
+unsupported version aborts the process rather than throwing) — these
+features silently disable themselves and nothing else in RailsForge is
+affected.
 
 - **`RailsForge: Find Near-Duplicate Methods (DRY)`** — near-duplicate method
   *bodies* across the whole codebase (not just line-count heuristics), ranked
@@ -288,7 +292,7 @@ silently disable themselves — nothing else in RailsForge is affected.
 - Ruby $\ge 2.7$ & Rails $\ge 5.2$
 - Bundler (`Gemfile` / `Gemfile.lock`)
 - *(Optional)* [Ollama](https://ollama.ai/) running locally on `http://localhost:11434` for `@rails` AI assistant features (`ollama run qwen2.5-coder:14b` or `qwen2.5-coder:7b`).
-- The AST-Backed Analysis features (§16) bundle native modules (`better-sqlite3`, `tree-sitter-ruby`) with prebuilt binaries for macOS/Linux/Windows on x64 and arm64. If your platform isn't covered, those specific features disable themselves — everything else in RailsForge is unaffected.
+- The AST-Backed Analysis features (§16) bundle native modules (`better-sqlite3`, `tree-sitter-ruby`) with prebuilt binaries for macOS/Linux/Windows on x64 and arm64, but `better-sqlite3` additionally requires a Node runtime with N-API >= 10, i.e. **Node >= 22.14** (or an Electron built on it) — VS Code/Cursor/VSCodium/Windsurf builds bundling an older Electron won't have those specific features available. If your platform or Node version isn't covered, §16 disables itself — everything else in RailsForge is unaffected.
 
 ---
 
