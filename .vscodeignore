@@ -10,3 +10,6 @@ pnpm-lock.yaml
 *.log
 .github/**
 PRD.md
+.claude/**
+.gitignore
+pnpm-workspace.yaml

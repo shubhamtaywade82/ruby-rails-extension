@@ -1,0 +1,7 @@
+allowBuilds:
+  '@vscode/vsce-sign': false
+  better-sqlite3: false
+  esbuild: false
+  keytar: false
+  tree-sitter: false
+  tree-sitter-ruby: false
