@@ -5,12 +5,32 @@
 import * as fs from 'fs'
 import * as path from 'path'
 
+/**
+ * Broad shape of the project, used to adapt which features are relevant:
+ * - `monolith`: a full Rails app (views, helpers, asset pipeline)
+ * - `api_only`: a Rails app with `config.api_only = true` (or an
+ *   `ApplicationController < ActionController::API`) — no views/helpers
+ * - `gem`: a non-Rails Ruby project with a `.gemspec`
+ * - `script`: any other non-Rails Ruby codebase
+ */
+export type ProjectType = 'monolith' | 'api_only' | 'gem' | 'script'
+
+export function formatProjectType(type: ProjectType): string {
+  switch (type) {
+    case 'monolith': return 'Monolith (full MVC)'
+    case 'api_only': return 'API-only'
+    case 'gem': return 'Gem'
+    case 'script': return 'Script'
+  }
+}
+
 export interface ProjectEnvironment {
   rubyVersion: string
   /** True only when `rails` is an actual Gemfile.lock dependency — a plain gem/script isn't a Rails app. */
   hasRails: boolean
   railsVersion: string
   majorRailsVersion: number
+  projectType: ProjectType
   hasHotwire: boolean
   hasTurbo: boolean
   hasStimulus: boolean
@@ -40,12 +60,14 @@ export class EnvironmentDetector {
     const hasBrakeman = gemfileLockContent.includes('brakeman')
     const testFramework = gemfileLockContent.includes('rspec-rails') ? 'rspec' : 'minitest'
     const binstubs = this.detectBinstubs(workspaceRoot)
+    const projectType = this.detectProjectType(workspaceRoot, hasRails)
 
     return {
       rubyVersion,
       hasRails,
       railsVersion,
       majorRailsVersion: majorRails,
+      projectType,
       hasHotwire,
       hasTurbo,
       hasStimulus,
@@ -105,6 +127,34 @@ export class EnvironmentDetector {
     const regex = new RegExp(`^\\s+${gemName}\\s+\\(([0-9.]+)\\)`, 'm')
     const match = regex.exec(gemfileLock)
     return match ? match[1] : null
+  }
+
+  private detectProjectType(root: string, hasRails: boolean): ProjectType {
+    if (hasRails) {
+      return this.isApiOnly(root) ? 'api_only' : 'monolith'
+    }
+    return this.hasGemspec(root) ? 'gem' : 'script'
+  }
+
+  private isApiOnly(root: string): boolean {
+    const applicationConfigPath = path.join(root, 'config', 'application.rb')
+    if (fs.existsSync(applicationConfigPath)) {
+      const content = fs.readFileSync(applicationConfigPath, 'utf8')
+      if (/config\.api_only\s*=\s*true/.test(content)) {return true}
+    }
+
+    const applicationControllerPath = path.join(root, 'app', 'controllers', 'application_controller.rb')
+    if (fs.existsSync(applicationControllerPath)) {
+      const content = fs.readFileSync(applicationControllerPath, 'utf8')
+      if (/class\s+ApplicationController\s*<\s*ActionController::API/.test(content)) {return true}
+    }
+
+    return false
+  }
+
+  private hasGemspec(root: string): boolean {
+    if (!fs.existsSync(root)) {return false}
+    return fs.readdirSync(root).some(f => f.endsWith('.gemspec'))
   }
 
   private detectBinstubs(root: string): Set<string> {

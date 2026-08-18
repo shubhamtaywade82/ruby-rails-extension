@@ -50,3 +50,25 @@ export class ViewPartialResolver {
     return null
   }
 }
+
+/**
+ * Given a line of ERB/HAML/Slim and a 0-based character offset, returns the
+ * quoted path passed to `render` if the cursor is sitting on it, e.g.
+ * `render "shared/navbar"` or `render partial: "users/card", locals: {...}`.
+ * Used by ViewPartialDefinitionProvider to resolve exactly the render call the
+ * cursor is on.
+ */
+export function extractRenderPathAtPosition(line: string, char: number): string | null {
+  const pattern = /render(?:\s*\(\s*|\s+)(?:partial:\s*)?["']([^"']+)["']/g
+  let match: RegExpExecArray | null
+
+  while ((match = pattern.exec(line)) !== null) {
+    const value = match[1]
+    const start = match.index + match[0].lastIndexOf(value)
+    const end = start + value.length
+    if (char >= start && char <= end) {
+      return value
+    }
+  }
+  return null
+}

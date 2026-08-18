@@ -11,7 +11,20 @@ export interface TurboFrameLocation {
 export class TurboFrameNavigator {
   private frameMap: Map<string, TurboFrameLocation[]> = new Map()
 
+  /** Removes all indexed frames for a file so it can be safely re-indexed on save. */
+  removeFile(filePath: string): void {
+    for (const [id, locations] of this.frameMap) {
+      const remaining = locations.filter(loc => loc.filePath !== filePath)
+      if (remaining.length > 0) {
+        this.frameMap.set(id, remaining)
+      } else {
+        this.frameMap.delete(id)
+      }
+    }
+  }
+
   indexTemplateFrames(filePath: string, content: string): void {
+    this.removeFile(filePath)
     const lines = content.split('\n')
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
@@ -42,4 +55,30 @@ export class TurboFrameNavigator {
   getAllFrames(): string[] {
     return Array.from(this.frameMap.keys())
   }
+}
+
+/**
+ * Given a line of markup/ERB and a 0-based character offset, returns the Turbo
+ * Frame id under the cursor if it's inside a `turbo_frame_tag "id"` call or a
+ * `<turbo-frame id="id">` tag, or null otherwise. Used by TurboFrameDefinitionProvider
+ * to resolve exactly the id the cursor is sitting on.
+ */
+export function extractFrameIdAtPosition(line: string, char: number): string | null {
+  const patterns = [
+    /turbo_frame_tag\s+["':]([a-zA-Z0-9_-]+)/g,
+    /<turbo-frame\s+id=["']([a-zA-Z0-9_-]+)["']/g,
+  ]
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null
+    while ((match = pattern.exec(line)) !== null) {
+      const id = match[1]
+      const start = match.index + match[0].lastIndexOf(id)
+      const end = start + id.length
+      if (char >= start && char <= end) {
+        return id
+      }
+    }
+  }
+  return null
 }

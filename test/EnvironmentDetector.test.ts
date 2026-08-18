@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { EnvironmentDetector } from '../src/environment/EnvironmentDetector'
+import { EnvironmentDetector, formatProjectType } from '../src/environment/EnvironmentDetector'
 
 describe('EnvironmentDetector', () => {
   const detector = new EnvironmentDetector()
@@ -79,8 +79,86 @@ DEPENDENCIES
       hasBrakeman: false,
       testFramework: 'rspec' as const,
       binstubs: new Set(['rubocop']),
+      projectType: 'monolith' as const,
     }
 
     expect(detector.getCommandPrefix('rubocop', env, '/workspace')).toBe('bundle exec rubocop')
+  })
+
+  describe('projectType', () => {
+    function railsLock(): string {
+      return `
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rails (7.1.3.2)
+
+DEPENDENCIES
+  rails (~> 7.1.3)
+`
+    }
+
+    it('detects a full Rails app as monolith', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-monolith-'))
+      fs.writeFileSync(path.join(tmpDir, 'Gemfile.lock'), railsLock())
+
+      expect(detector.detectEnvironment(tmpDir).projectType).toBe('monolith')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('detects an API-only Rails app via config.api_only = true', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-api-'))
+      fs.writeFileSync(path.join(tmpDir, 'Gemfile.lock'), railsLock())
+      fs.mkdirSync(path.join(tmpDir, 'config'), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmpDir, 'config', 'application.rb'),
+        'module MyApi\n  class Application < Rails::Application\n    config.api_only = true\n  end\nend\n',
+      )
+
+      expect(detector.detectEnvironment(tmpDir).projectType).toBe('api_only')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('detects an API-only Rails app via ApplicationController < ActionController::API', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-api-controller-'))
+      fs.writeFileSync(path.join(tmpDir, 'Gemfile.lock'), railsLock())
+      fs.mkdirSync(path.join(tmpDir, 'app', 'controllers'), { recursive: true })
+      fs.writeFileSync(
+        path.join(tmpDir, 'app', 'controllers', 'application_controller.rb'),
+        'class ApplicationController < ActionController::API\nend\n',
+      )
+
+      expect(detector.detectEnvironment(tmpDir).projectType).toBe('api_only')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('detects a non-Rails project with a .gemspec as a gem', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-gemspec-'))
+      fs.writeFileSync(path.join(tmpDir, 'my_gem.gemspec'), 'Gem::Specification.new do |s|\nend\n')
+
+      expect(detector.detectEnvironment(tmpDir).projectType).toBe('gem')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+
+    it('detects a non-Rails project with no .gemspec as a script', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-script-'))
+
+      expect(detector.detectEnvironment(tmpDir).projectType).toBe('script')
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
+  })
+})
+
+describe('formatProjectType', () => {
+  it('renders a human-readable label for each project type', () => {
+    expect(formatProjectType('monolith')).toBe('Monolith (full MVC)')
+    expect(formatProjectType('api_only')).toBe('API-only')
+    expect(formatProjectType('gem')).toBe('Gem')
+    expect(formatProjectType('script')).toBe('Script')
   })
 })

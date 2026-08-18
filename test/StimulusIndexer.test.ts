@@ -33,6 +33,8 @@ export default class extends Controller {
     expect(def.actions).toContain('copy')
     expect(def.actions).toContain('toggle')
     expect(def.actions).not.toContain('connect')
+    expect(def.actionLines.copy).toBe(11)
+    expect(def.actionLines.toggle).toBe(15)
   })
 
   it('handles nested folder names in identifier', () => {

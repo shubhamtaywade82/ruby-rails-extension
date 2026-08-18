@@ -7,10 +7,24 @@ import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { ProjectEnvironment } from '../environment/EnvironmentDetector'
 import { ProjectPatternIndexer } from '../patterns/ProjectPatternIndexer'
 
+/** Duplicated (not imported) from config/RailsForgeConfig on purpose — this class stays vscode-free. */
+export type AiAgentProvider = 'ollama' | 'openai' | 'anthropic'
+
 export interface RailsAgentConfig {
   ollamaHost: string
   model: string
   maxIterations?: number
+  /** Defaults to 'ollama' when omitted, preserving the original local-only behavior. */
+  provider?: AiAgentProvider
+  openaiModel?: string
+  anthropicModel?: string
+  /**
+   * Async getter for the provider's API key (backed by vscode.SecretStorage — see
+   * extension.ts's `railsforge.setAiApiKey` command). Only consulted for cloud
+   * providers; Ollama never needs a key. A cloud provider without a configured key
+   * fails `run()` with a clear message instead of sending an unauthenticated request.
+   */
+  getApiKey?: () => Promise<string | undefined>
 }
 
 export interface RailsAgentContext {
@@ -37,14 +51,67 @@ export class RailsAgent {
 
   async run(prompt: string, context: RailsAgentContext): Promise<RailsAgentResult> {
     const systemPrompt = this.buildSystemPrompt(context)
-    const url = `${this.config.ollamaHost.replace(/\/$/, '')}/v1/chat/completions`
+    const { success, response } = await this.chatCompletion(systemPrompt, prompt)
+    return { success, response, iterations: success ? 1 : 0 }
+  }
 
+  private async chatCompletion(systemPrompt: string, prompt: string): Promise<{ success: boolean; response: string }> {
+    const provider = this.config.provider ?? 'ollama'
+
+    if (provider === 'anthropic') {
+      const apiKey = await this.config.getApiKey?.()
+      if (!apiKey) {return this.missingApiKeyResult('Anthropic')}
+      return this.callAnthropic(systemPrompt, prompt, this.config.anthropicModel ?? 'claude-sonnet-4-5', apiKey)
+    }
+
+    if (provider === 'openai') {
+      const apiKey = await this.config.getApiKey?.()
+      if (!apiKey) {return this.missingApiKeyResult('OpenAI')}
+      return this.callOpenAiCompatible(
+        'https://api.openai.com/v1/chat/completions',
+        this.config.openaiModel ?? 'gpt-4o-mini',
+        systemPrompt,
+        prompt,
+        apiKey,
+        'OpenAI',
+      )
+    }
+
+    return this.callOpenAiCompatible(
+      `${this.config.ollamaHost.replace(/\/$/, '')}/v1/chat/completions`,
+      this.config.model,
+      systemPrompt,
+      prompt,
+      undefined,
+      `local Ollama at ${this.config.ollamaHost}`,
+    )
+  }
+
+  private missingApiKeyResult(providerLabel: string): { success: false; response: string } {
+    return {
+      success: false,
+      response: `No ${providerLabel} API key configured. Run "RailsForge: Set AI Provider API Key" (railsforge.setAiApiKey) first, or switch railsForge.ai.provider back to "ollama".`,
+    }
+  }
+
+  /** Ollama's /v1/chat/completions and OpenAI's /v1/chat/completions share the same request/response shape. */
+  private async callOpenAiCompatible(
+    url: string,
+    model: string,
+    systemPrompt: string,
+    prompt: string,
+    apiKey: string | undefined,
+    connectionLabel: string,
+  ): Promise<{ success: boolean; response: string }> {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
         body: JSON.stringify({
-          model: this.config.model,
+          model,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: prompt },
@@ -54,27 +121,48 @@ export class RailsAgent {
       })
 
       if (!res.ok) {
-        return {
-          success: false,
-          response: `Ollama error: ${res.status} ${res.statusText}`,
-          iterations: 1,
-        }
+        return { success: false, response: `${connectionLabel} error: ${res.status} ${res.statusText}` }
       }
 
       const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const reply = json.choices?.[0]?.message?.content ?? 'No response generated.'
-
-      return {
-        success: true,
-        response: reply,
-        iterations: 1,
-      }
+      return { success: true, response: json.choices?.[0]?.message?.content ?? 'No response generated.' }
     } catch (err) {
-      return {
-        success: false,
-        response: `Failed to connect to local Ollama at ${this.config.ollamaHost}: ${String(err)}`,
-        iterations: 0,
+      return { success: false, response: `Failed to connect to ${connectionLabel}: ${String(err)}` }
+    }
+  }
+
+  private async callAnthropic(
+    systemPrompt: string,
+    prompt: string,
+    model: string,
+    apiKey: string,
+  ): Promise<{ success: boolean; response: string }> {
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2,
+        }),
+      })
+
+      if (!res.ok) {
+        return { success: false, response: `Anthropic error: ${res.status} ${res.statusText}` }
       }
+
+      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
+      const text = json.content?.find(block => block.type === 'text')?.text
+      return { success: true, response: text ?? 'No response generated.' }
+    } catch (err) {
+      return { success: false, response: `Failed to connect to Anthropic: ${String(err)}` }
     }
   }
 
@@ -99,7 +187,16 @@ export class RailsAgent {
     return cleaned.length > 0 ? cleaned : null
   }
 
+  /**
+   * For Ollama, actually pings the local server. Cloud providers aren't pinged (no free,
+   * side-effect-free health endpoint) — "healthy" just means a key is configured.
+   */
   async healthCheck(): Promise<boolean> {
+    const provider = this.config.provider ?? 'ollama'
+    if (provider !== 'ollama') {
+      return Boolean(await this.config.getApiKey?.())
+    }
+
     try {
       const url = `${this.config.ollamaHost.replace(/\/$/, '')}/api/tags`
       const res = await fetch(url, { method: 'GET' })

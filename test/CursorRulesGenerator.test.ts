@@ -46,6 +46,32 @@ describe('buildCursorRulesContent', () => {
     expect(content).toContain('railsforge` MCP server is available')
   })
 
+  it('notes API-only constraints when projectType is api_only', () => {
+    const content = buildCursorRulesContent({
+      rubyVersion: '3.3.0', railsVersion: '7.1.0', hasRails: true, projectType: 'api_only',
+      tables: [], routes: [], patterns: [], mcpServerAvailable: false,
+    })
+    expect(content).toContain('API-only Rails app')
+    expect(content).toContain('do not suggest ERB/HAML/Slim views')
+  })
+
+  it('notes gem constraints when projectType is gem', () => {
+    const content = buildCursorRulesContent({
+      rubyVersion: '3.3.0', hasRails: false, projectType: 'gem',
+      tables: [], routes: [], patterns: [], mcpServerAvailable: false,
+    })
+    expect(content).toContain('This is a Ruby gem, not a Rails application')
+  })
+
+  it('adds no extra note for monolith or script project types', () => {
+    const monolith = buildCursorRulesContent({
+      rubyVersion: '3.3.0', railsVersion: '7.1.0', hasRails: true, projectType: 'monolith',
+      tables: [], routes: [], patterns: [], mcpServerAvailable: false,
+    })
+    expect(monolith).not.toContain('API-only Rails app')
+    expect(monolith).not.toContain('Ruby gem, not a Rails application')
+  })
+
   it('omits sections entirely when there is nothing to report', () => {
     const content = buildCursorRulesContent({
       rubyVersion: '3.3.0', railsVersion: '7.1.0', hasRails: true,

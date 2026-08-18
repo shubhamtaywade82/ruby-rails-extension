@@ -9,11 +9,13 @@
 import { SchemaTable } from '../rails/SchemaIndexer'
 import { RailsRoute } from '../rails/RoutesIndexer'
 import { IndexedPattern, PatternType } from '../patterns/ProjectPatternIndexer'
+import { ProjectType } from '../environment/EnvironmentDetector'
 
 export interface CursorRulesInput {
   rubyVersion: string
   railsVersion?: string
   hasRails: boolean
+  projectType?: ProjectType
   tables: SchemaTable[]
   routes: RailsRoute[]
   patterns: IndexedPattern[]
@@ -32,6 +34,7 @@ export function buildCursorRulesContent(input: CursorRulesInput): string {
     input.hasRails
       ? `This is a Rails ${input.railsVersion ?? 'unknown'} project on Ruby ${input.rubyVersion}. Do not use or suggest APIs from newer Ruby/Rails versions.`
       : `This is a standalone Ruby project (not Rails) on Ruby ${input.rubyVersion}. Do not assume ActiveRecord/ActionController or other Rails framework APIs are available.`,
+    ...projectTypeNote(input.projectType),
     '',
     '## Rules',
     '',
@@ -70,6 +73,17 @@ export function buildCursorRulesContent(input: CursorRulesInput): string {
   }
 
   return `${parts.join('\n')}\n`
+}
+
+function projectTypeNote(projectType: ProjectType | undefined): string[] {
+  switch (projectType) {
+    case 'api_only':
+      return ['This is an API-only Rails app — do not suggest ERB/HAML/Slim views, view helpers, or the asset pipeline; responses are JSON (or similar) rendered directly from controllers/serializers.']
+    case 'gem':
+      return ['This is a Ruby gem, not a Rails application — do not assume ActiveRecord/ActionController or any Rails framework APIs are available unless the gem explicitly declares a Rails dependency.']
+    default:
+      return []
+  }
 }
 
 function groupByType(patterns: IndexedPattern[]): Array<[PatternType, IndexedPattern[]]> {

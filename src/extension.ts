@@ -21,7 +21,11 @@ import { ViewComponentResolver } from './rails/ViewComponentResolver'
 import { MigrationDiagnostics } from './rails/MigrationDiagnostics'
 import { StimulusIndexer } from './hotwire/StimulusIndexer'
 import { StimulusCompletionProvider } from './hotwire/StimulusCompletionProvider'
+import { StimulusDefinitionProvider } from './hotwire/StimulusDefinitionProvider'
 import { TurboFrameNavigator } from './hotwire/TurboFrameNavigator'
+import { TurboFrameDefinitionProvider } from './hotwire/TurboFrameDefinitionProvider'
+import { ViewPartialResolver } from './rails/ViewPartialResolver'
+import { ViewPartialDefinitionProvider } from './rails/ViewPartialDefinitionProvider'
 import { TestExplorerController } from './testing/TestExplorerController'
 import { TestCodeLensProvider } from './testing/TestCodeLensProvider'
 import { EnvironmentDetector, ProjectEnvironment } from './environment/EnvironmentDetector'
@@ -51,8 +55,16 @@ import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerato
 import { buildCursorRulesContent } from './mcp/CursorRulesGenerator'
 import { EmbeddingClient } from './search/EmbeddingClient'
 import { SemanticSearchIndex } from './search/SemanticSearchIndex'
+import { EndwiseProvider } from './editing/EndwiseProvider'
+import { ErbTagCompletionProvider } from './editing/ErbTagCompletionProvider'
+import { GemLensProvider } from './gems/GemLensProvider'
+import { RubyGemsClient } from './gems/RubyGemsClient'
+import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
+import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
+import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 
 export function activate(context: vscode.ExtensionContext): void {
+  const config = readConfig()
   const schemaIndexer = new SchemaIndexer()
   const routesIndexer = new RoutesIndexer()
   const mvcNavigator = new MVCNavigator()
@@ -77,6 +89,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const viewComponentResolver = new ViewComponentResolver()
   const stimulusIndexer = new StimulusIndexer()
   const turboFrameNavigator = new TurboFrameNavigator()
+  const viewPartialResolver = new ViewPartialResolver()
+  const rubyGemsClient = new RubyGemsClient(config.performanceCacheSize)
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -92,20 +106,34 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
   const env: ProjectEnvironment = envDetector.detectEnvironment(workspaceRoot)
+  if (config.projectTypeOverride !== 'auto') {
+    env.projectType = config.projectTypeOverride
+  }
 
-  // Set UI when contexts
+  // Set UI `when`-clause contexts (see package.json's menus.commandPalette and
+  // keybindings) so the Command Palette and keybindings only surface commands that
+  // are actually relevant to this project — e.g. "Go to View" for a gem with no
+  // app/views directory would otherwise always be there but always fail.
+  void vscode.commands.executeCommand('setContext', 'railsforge.projectType', env.projectType)
+  void vscode.commands.executeCommand('setContext', 'railsforge.isRailsApp', env.projectType === 'monolith' || env.projectType === 'api_only')
+  void vscode.commands.executeCommand('setContext', 'railsforge.hasViews', env.projectType === 'monolith')
   void vscode.commands.executeCommand('setContext', 'railsforge.hasHotwire', env.hasHotwire)
   void vscode.commands.executeCommand('setContext', 'railsforge.hasPundit', env.hasPundit)
   void vscode.commands.executeCommand('setContext', 'railsforge.hasViewComponent', env.hasViewComponent)
+  void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', config.aiProvider)
+  void vscode.commands.executeCommand('setContext', 'railsforge.apiDocsEnabled', config.apiDocsEnabled)
 
-  const config = vscode.workspace.getConfiguration('railsForge')
-  const ollamaHost = config.get<string>('ollama.host', 'http://localhost:11434')
+  const ollamaHost = config.ollamaHost
   const agent = new RailsAgent(
     schemaIndexer,
     routesIndexer,
     {
       ollamaHost,
-      model: config.get<string>('ollama.model', 'qwen2.5-coder:14b'),
+      model: config.ollamaModel,
+      provider: config.aiProvider,
+      openaiModel: config.aiOpenaiModel,
+      anthropicModel: config.aiAnthropicModel,
+      getApiKey: () => Promise.resolve(context.secrets.get(aiApiKeySecretKey(config.aiProvider))),
     },
     env,
     projectPatternIndexer,
@@ -113,9 +141,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const embeddingClient = new EmbeddingClient({
     ollamaHost,
-    model: config.get<string>('ollama.embeddingModel', 'nomic-embed-text'),
+    model: config.ollamaEmbeddingModel,
   })
-  const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text))
+  const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text), config.performanceCacheSize)
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
   const chatViewProvider = new RailsChatViewProvider(
@@ -148,9 +176,12 @@ export function activate(context: vscode.ExtensionContext): void {
     patternDiagnostics.scanWorkspace()
     void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
+    void loadTurboFrames(turboFrameNavigator)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
     watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
+    watchStimulusControllers(context, stimulusIndexer)
+    watchTurboFrameTemplates(context, turboFrameNavigator)
   }
 
   // 3. Activity Bar Tree Views
@@ -167,7 +198,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
+    vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new GemLensProvider(rubyGemsClient)),
     vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, factoryBotResolver),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html'], new StimulusDefinitionProvider(stimulusIndexer)),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html', 'ruby'], new TurboFrameDefinitionProvider(turboFrameNavigator)),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'ruby'], new ViewPartialDefinitionProvider(viewPartialResolver)),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, rubocopProvider),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, migrationDiagnostics),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, deprecationLinter),
@@ -185,6 +220,8 @@ export function activate(context: vscode.ExtensionContext): void {
       '\'',
       '=',
     ),
+    vscode.languages.registerCompletionItemProvider('erb', new ErbTagCompletionProvider(), '%'),
+    vscode.languages.registerOnTypeFormattingEditProvider({ language: 'ruby', scheme: 'file' }, new EndwiseProvider(), '\n'),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, relatedCodeLensProvider),
@@ -214,6 +251,35 @@ export function activate(context: vscode.ExtensionContext): void {
     principleLinter.updateDiagnostics(e.document)
     patternDiagnostics.updateDiagnostics(e.document)
     dependencyDiagnostics.updateDiagnostics(e.document)
+  }, null, context.subscriptions)
+
+  let lastBrakemanScanOnSave = 0
+  vscode.workspace.onDidSaveTextDocument(doc => {
+    if (doc.languageId !== 'ruby') {return}
+    const saveConfig = readConfig()
+    if (saveConfig.rubocopAutocorrectOnSave) {
+      void rubocopProvider.autoCorrectFile(doc.uri, saveConfig.rubocopMode)
+    }
+    if (saveConfig.brakemanScanOnSave && env.hasRails) {
+      // Brakeman is a whole-project static scan (can take several seconds), so a save-
+      // triggered run is debounced and silent-on-clean rather than firing (and popping a
+      // doc open) on every keystroke-adjacent save the way a per-file linter would.
+      const now = Date.now()
+      if (now - lastBrakemanScanOnSave >= 30_000) {
+        lastBrakemanScanOnSave = now
+        void brakemanProvider.runScan(workspaceRoot).then(report => {
+          if (report.warnings.length === 0) {return}
+          void vscode.window
+            .showWarningMessage(`RailsForge: Brakeman found ${report.warnings.length} security warning(s).`, 'Show Report')
+            .then(choice => {
+              if (choice !== 'Show Report') {return}
+              void vscode.workspace
+                .openTextDocument({ content: brakemanProvider.formatMarkdownReport(report), language: 'markdown' })
+                .then(reportDoc => vscode.window.showTextDocument(reportDoc))
+            })
+        })
+      }
+    }
   }, null, context.subscriptions)
 
   // 4. Register Commands
@@ -297,6 +363,63 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
     }
   }
 }
+
+function watchStimulusControllers(context: vscode.ExtensionContext, indexer: StimulusIndexer): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/app/javascript/controllers/**/*_controller.{js,ts}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    if (fs.existsSync(uri.fsPath)) {
+      indexer.parseControllerCode(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    }
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  context.subscriptions.push(watcher)
+}
+
+/** SecretStorage key for a given AI provider's API key — never the same key across providers, so switching providers doesn't require re-entering the other one's key. */
+function aiApiKeySecretKey(provider: 'ollama' | 'openai' | 'anthropic'): string {
+  return `railsForge.aiApiKey.${provider}`
+}
+
+/** Resolves `railsForge.excludePatterns` (read fresh, so a settings change applies to the next scan) into the glob `findFiles` expects. */
+function resolveExcludeGlob(): string | undefined {
+  return buildExcludeGlob(readConfig().excludePatterns) ?? undefined
+}
+
+/**
+ * File-system watchers can't take an exclude glob the way `findFiles` can, so a save
+ * inside an excluded directory (e.g. a vendored gem under vendor/bundle/.../app/services)
+ * would otherwise slip into live re-indexing even though the initial workspace-wide scan
+ * skipped it. Reindex callbacks call this first so both paths stay consistent.
+ */
+function isExcludedByConfig(fsPath: string): boolean {
+  return isExcludedPath(fsPath, readConfig().excludePatterns)
+}
+
+async function loadTurboFrames(navigator: TurboFrameNavigator): Promise<void> {
+  const files = await vscode.workspace.findFiles('app/views/**/*.{erb,haml,slim}', resolveExcludeGlob())
+  for (const file of files) {
+    navigator.indexTemplateFrames(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+}
+
+function watchTurboFrameTemplates(context: vscode.ExtensionContext, navigator: TurboFrameNavigator): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/app/views/**/*.{erb,haml,slim}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    if (fs.existsSync(uri.fsPath)) {
+      navigator.indexTemplateFrames(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      navigator.removeFile(uri.fsPath)
+    }
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => navigator.removeFile(uri.fsPath))
+  context.subscriptions.push(watcher)
+}
+
 async function loadProjectPatterns(
   indexer: ProjectPatternIndexer,
   codeLensProvider: PatternCodeLensProvider,
@@ -317,8 +440,9 @@ async function loadProjectPatterns(
     '{app,lib}/**/concerns/**/*.rb',
   ]
 
+  const excludeGlob = resolveExcludeGlob()
   for (const glob of globs) {
-    const files = await vscode.workspace.findFiles(glob, '**/node_modules/**')
+    const files = await vscode.workspace.findFiles(glob, excludeGlob)
     for (const file of files) {
       const content = fs.readFileSync(file.fsPath, 'utf8')
       indexer.indexFile(file.fsPath, content)
@@ -332,11 +456,12 @@ async function loadProjectPatterns(
 }
 
 async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): Promise<void> {
-  const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', '**/node_modules/**')
+  const excludeGlob = resolveExcludeGlob()
+  const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', excludeGlob)
   for (const file of files) {
     relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
   }
-  const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', '**/node_modules/**')
+  const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', excludeGlob)
   for (const file of testFiles) {
     relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
   }
@@ -346,6 +471,7 @@ async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLe
 function watchSpecFiles(context: vscode.ExtensionContext, relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/{spec/**/*_spec.rb,test/**/*_test.rb}')
   const reindex = (uri: vscode.Uri): void => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
     if (fs.existsSync(uri.fsPath)) {
       relatedFilesIndex.indexSpecFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
     } else {
@@ -375,6 +501,7 @@ function watchPatternFiles(
     '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
   )
   const reindex = (uri: vscode.Uri): void => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
     if (fs.existsSync(uri.fsPath)) {
       indexer.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
     } else {
@@ -417,7 +544,7 @@ async function maybeReplaceDuplicateCallSites(
   replacementCall: string,
   excludeUri: vscode.Uri,
 ): Promise<void> {
-  const files = await vscode.workspace.findFiles('{app,lib}/**/*.rb', '**/node_modules/**')
+  const files = await vscode.workspace.findFiles('{app,lib}/**/*.rb', resolveExcludeGlob())
   const contents = new Map<string, string>()
   for (const file of files) {
     if (file.fsPath === excludeUri.fsPath) {continue}
@@ -519,13 +646,23 @@ function watchProjectFiles(
   routesIndexer: RoutesIndexer,
   migrationDiagnostics: MigrationDiagnostics,
 ): void {
-  const schemaWatcher = vscode.workspace.createFileSystemWatcher('**/db/schema.rb')
-  schemaWatcher.onDidChange(() => loadSchema(root, schemaIndexer))
-  context.subscriptions.push(schemaWatcher)
+  if (readConfig().schemaAutoIndex) {
+    const schemaWatcher = vscode.workspace.createFileSystemWatcher('**/db/schema.rb')
+    schemaWatcher.onDidChange(uri => {
+      if (isExcludedByConfig(uri.fsPath)) {return}
+      loadSchema(root, schemaIndexer)
+    })
+    context.subscriptions.push(schemaWatcher)
+  }
 
-  const routesWatcher = vscode.workspace.createFileSystemWatcher('**/config/routes.rb')
-  routesWatcher.onDidChange(() => loadRoutes(root, routesIndexer))
-  context.subscriptions.push(routesWatcher)
+  if (readConfig().routesAutoIndex) {
+    const routesWatcher = vscode.workspace.createFileSystemWatcher('**/config/routes.rb')
+    routesWatcher.onDidChange(uri => {
+      if (isExcludedByConfig(uri.fsPath)) {return}
+      loadRoutes(root, routesIndexer)
+    })
+    context.subscriptions.push(routesWatcher)
+  }
 
   const migrationWatcher = vscode.workspace.createFileSystemWatcher('**/db/migrate/*.rb')
   migrationWatcher.onDidChange(uri => {
@@ -603,6 +740,119 @@ function registerCommands(
       editor.selection = new vscode.Selection(pos, pos)
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
     }),
+    vscode.commands.registerCommand('railsforge.setAiApiKey', async () => {
+      const provider = readConfig().aiProvider
+      if (provider === 'ollama') {
+        vscode.window.showInformationMessage('RailsForge: railsForge.ai.provider is "ollama" — no API key needed. Set railsForge.ai.provider to "openai" or "anthropic" first.')
+        return
+      }
+
+      const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+      const key = await vscode.window.showInputBox({
+        title: `RailsForge: Set ${providerLabel} API Key`,
+        prompt: 'Stored securely via VS Code SecretStorage, never written to settings.json. Leave blank and press Enter to clear the stored key.',
+        password: true,
+        ignoreFocusOut: true,
+      })
+      if (key === undefined) {return}
+
+      if (key.length === 0) {
+        await context.secrets.delete(aiApiKeySecretKey(provider))
+        vscode.window.showInformationMessage(`RailsForge: Cleared the stored ${providerLabel} API key.`)
+        return
+      }
+
+      await context.secrets.store(aiApiKeySecretKey(provider), key)
+      vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved. (railsForge.ai.provider changes require a window reload to take effect.)`)
+    }),
+    vscode.commands.registerCommand('railsforge.generateApiDocs', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+      if (!readConfig().apiDocsEnabled) {
+        vscode.window.showWarningMessage('RailsForge: railsForge.apiDocs.enabled is false.')
+        return
+      }
+
+      const allRoutes = routes.getAllRoutes()
+      if (allRoutes.length === 0) {
+        vscode.window.showWarningMessage('RailsForge: No routes indexed — open a project with config/routes.rb first.')
+        return
+      }
+
+      const yaml = buildOpenApiSkeleton(allRoutes, { title: path.basename(root) })
+      const doc = await vscode.workspace.openTextDocument({ content: yaml, language: 'yaml' })
+      await vscode.window.showTextDocument(doc)
+      vscode.window.showInformationMessage(
+        `RailsForge: Generated an OpenAPI skeleton for ${allRoutes.length} route(s). Response bodies are left as TODOs — RailsForge only knows the route, not your serializers.`,
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.bumpGemVersion', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+
+      const versionFiles = await vscode.workspace.findFiles('lib/**/version.rb', resolveExcludeGlob())
+      if (versionFiles.length === 0) {
+        vscode.window.showWarningMessage('RailsForge: No lib/**/version.rb found.')
+        return
+      }
+
+      let targetUri = versionFiles[0]
+      if (versionFiles.length > 1) {
+        const picked = await vscode.window.showQuickPick(
+          versionFiles.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri })),
+          { placeHolder: 'Multiple version.rb files found — pick one' },
+        )
+        if (!picked) {return}
+        targetUri = picked.uri
+      }
+
+      const content = fs.readFileSync(targetUri.fsPath, 'utf8')
+      const currentVersion = parseVersion(content)
+      if (!currentVersion) {
+        vscode.window.showWarningMessage(`RailsForge: Couldn't find a VERSION assignment in ${vscode.workspace.asRelativePath(targetUri)}.`)
+        return
+      }
+
+      const choice = await vscode.window.showQuickPick(
+        (['patch', 'minor', 'major'] as VersionBumpPart[]).map(part => ({
+          label: `${part} → ${bumpVersion(currentVersion, part)}`,
+          part,
+        })),
+        { placeHolder: `Current version: ${currentVersion}` },
+      )
+      if (!choice) {return}
+
+      const newVersion = bumpVersion(currentVersion, choice.part)
+      fs.writeFileSync(targetUri.fsPath, replaceVersionInContent(content, newVersion), 'utf8')
+
+      const doc = await vscode.workspace.openTextDocument(targetUri)
+      await vscode.window.showTextDocument(doc)
+      vscode.window.showInformationMessage(`RailsForge: Bumped version to ${newVersion} in ${vscode.workspace.asRelativePath(targetUri)}.`)
+    }),
+    vscode.commands.registerCommand('railsforge.releaseGem', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+
+      const choice = await vscode.window.showWarningMessage(
+        'This runs "bundle exec rake release", which builds the gem, creates and pushes a git tag, and publishes it to RubyGems.org. This cannot be undone. Continue?',
+        { modal: true },
+        'Run bundle exec rake release',
+      )
+      if (choice !== 'Run bundle exec rake release') {return}
+
+      const term = vscode.window.createTerminal({ name: 'RailsForge Release', cwd: root })
+      term.show()
+      term.sendText('bundle exec rake release')
+    }),
     vscode.commands.registerCommand('railsforge.exportCursorRules', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
       if (!root) {
@@ -610,13 +860,15 @@ function registerCommands(
         return
       }
 
+      const mcpEnabled = readConfig().mcpEnabled
       const mcpServerPath = path.join(context.extensionPath, 'dist', 'mcp', 'server.js')
-      const mcpServerAvailable = fs.existsSync(mcpServerPath)
+      const mcpServerAvailable = mcpEnabled && fs.existsSync(mcpServerPath)
 
       const content = buildCursorRulesContent({
         rubyVersion: env.rubyVersion,
         railsVersion: env.hasRails ? env.railsVersion : undefined,
         hasRails: env.hasRails,
+        projectType: env.projectType,
         tables: schemaIndexer.getAllTables(),
         routes: routes.getAllRoutes(),
         patterns: projectPatternIndexer.getAllPatterns(),
@@ -636,7 +888,9 @@ function registerCommands(
       vscode.window.showInformationMessage(
         mcpServerAvailable
           ? 'RailsForge: Exported .cursor/rules/railsforge.mdc and registered the railsforge MCP server in .cursor/mcp.json.'
-          : 'RailsForge: Exported .cursor/rules/railsforge.mdc.',
+          : mcpEnabled
+            ? 'RailsForge: Exported .cursor/rules/railsforge.mdc. (MCP server not bundled in this build — skipped registration.)'
+            : 'RailsForge: Exported .cursor/rules/railsforge.mdc. (railsForge.mcp.enabled is false — skipped MCP server registration.)',
       )
     }),
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
@@ -814,7 +1068,7 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.rubocopAutocorrect', async (uri?: vscode.Uri) => {
       const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri
       if (targetUri) {
-        const success = await rubocop.autoCorrectFile(targetUri)
+        const success = await rubocop.autoCorrectFile(targetUri, readConfig().rubocopMode)
         if (success) {
           vscode.window.showInformationMessage('✓ RuboCop autocorrect completed.')
         }
@@ -944,22 +1198,37 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.runSingleTest', (uri: vscode.Uri, line: number) => {
       const term = vscode.window.createTerminal('RailsForge Test')
       term.show()
-      const isRSpec = uri.fsPath.includes('/spec/')
-      const cmd = isRSpec
-        ? `bundle exec rspec "${uri.fsPath}:${line}"`
-        : `bundle exec rails test "${uri.fsPath}:${line}"`
-      term.sendText(cmd)
+      term.sendText(buildSingleTestCommand(uri, line, env))
     }),
     vscode.commands.registerCommand('railsforge.debugSingleTest', (uri: vscode.Uri, line: number) => {
       const term = vscode.window.createTerminal('RailsForge rdbg')
       term.show()
-      const isRSpec = uri.fsPath.includes('/spec/')
-      const cmd = isRSpec
-        ? `rdbg -n -c -- bundle exec rspec "${uri.fsPath}:${line}"`
-        : `rdbg -n -c -- bundle exec rails test "${uri.fsPath}:${line}"`
-      term.sendText(cmd)
+      term.sendText(`rdbg -n -c -- ${buildSingleTestCommand(uri, line, env)}`)
     }),
   )
+}
+
+/**
+ * Resolves the shell command to run a single test at `line` in `uri`. The path convention
+ * (spec/ vs test/) decides the framework when unambiguous; `railsForge.testing.framework`
+ * only breaks the tie for a file that lives in neither (e.g. a custom test layout).
+ * Rails' `bin/rails test file:line` syntax doesn't exist outside a Rails app, so a plain
+ * Minitest gem/script test runs the whole file instead of one line — Minitest itself has
+ * no universal line-based selection.
+ */
+function buildSingleTestCommand(uri: vscode.Uri, line: number, env: ProjectEnvironment): string {
+  const isRSpec = uri.fsPath.includes('/spec/')
+    ? true
+    : uri.fsPath.includes('/test/')
+      ? false
+      : readConfig().testingFramework === 'rspec'
+
+  if (isRSpec) {
+    return `bundle exec rspec "${uri.fsPath}:${line}"`
+  }
+  return env.hasRails
+    ? `bundle exec rails test "${uri.fsPath}:${line}"`
+    : `bundle exec ruby -Itest "${uri.fsPath}"`
 }
 
 function navigateCompanion(mvc: MVCNavigator, targetType: string): void {

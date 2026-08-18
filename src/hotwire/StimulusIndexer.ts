@@ -8,6 +8,8 @@ export interface StimulusControllerDef {
   targets: string[]
   actions: string[]
   values: string[]
+  /** 1-based line number of each action method, keyed by method name. */
+  actionLines: Record<string, number>
 }
 
 export class StimulusIndexer {
@@ -16,7 +18,7 @@ export class StimulusIndexer {
   parseControllerCode(filePath: string, code: string): StimulusControllerDef {
     const identifier = this.fileToIdentifier(filePath)
     const targets = this.extractTargets(code)
-    const actions = this.extractActions(code)
+    const { actions, actionLines } = this.extractActions(code)
     const values = this.extractValues(code)
 
     const def: StimulusControllerDef = {
@@ -25,6 +27,7 @@ export class StimulusIndexer {
       targets,
       actions,
       values,
+      actionLines,
     }
 
     this.controllers.set(identifier, def)
@@ -49,8 +52,9 @@ export class StimulusIndexer {
       .filter(Boolean)
   }
 
-  private extractActions(code: string): string[] {
+  private extractActions(code: string): { actions: string[]; actionLines: Record<string, number> } {
     const actions: string[] = []
+    const actionLines: Record<string, number> = {}
     const methodRegex = /^\s*([a-zA-Z0-9_]+)\s*\((?:event)?\)\s*\{/gm
     let match: RegExpExecArray | null
 
@@ -58,9 +62,10 @@ export class StimulusIndexer {
       const name = match[1]
       if (!['connect', 'disconnect', 'initialize'].includes(name)) {
         actions.push(name)
+        actionLines[name] = code.slice(0, match.index).split('\n').length
       }
     }
-    return actions
+    return { actions, actionLines }
   }
 
   private extractValues(code: string): string[] {
