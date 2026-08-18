@@ -60,6 +60,8 @@ import { ErbTagCompletionProvider } from './editing/ErbTagCompletionProvider'
 import { GemLensProvider } from './gems/GemLensProvider'
 import { RubyGemsClient } from './gems/RubyGemsClient'
 import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
+import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
+import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 
 export function activate(context: vscode.ExtensionContext): void {
   const schemaIndexer = new SchemaIndexer()
@@ -119,6 +121,7 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'railsforge.hasPundit', env.hasPundit)
   void vscode.commands.executeCommand('setContext', 'railsforge.hasViewComponent', env.hasViewComponent)
   void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', config.aiProvider)
+  void vscode.commands.executeCommand('setContext', 'railsforge.apiDocsEnabled', config.apiDocsEnabled)
 
   const ollamaHost = config.ollamaHost
   const agent = new RailsAgent(
@@ -762,6 +765,94 @@ function registerCommands(
       await context.secrets.store(aiApiKeySecretKey(provider), key)
       vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved. (railsForge.ai.provider changes require a window reload to take effect.)`)
     }),
+    vscode.commands.registerCommand('railsforge.generateApiDocs', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+      if (!readConfig().apiDocsEnabled) {
+        vscode.window.showWarningMessage('RailsForge: railsForge.apiDocs.enabled is false.')
+        return
+      }
+
+      const allRoutes = routes.getAllRoutes()
+      if (allRoutes.length === 0) {
+        vscode.window.showWarningMessage('RailsForge: No routes indexed — open a project with config/routes.rb first.')
+        return
+      }
+
+      const yaml = buildOpenApiSkeleton(allRoutes, { title: path.basename(root) })
+      const doc = await vscode.workspace.openTextDocument({ content: yaml, language: 'yaml' })
+      await vscode.window.showTextDocument(doc)
+      vscode.window.showInformationMessage(
+        `RailsForge: Generated an OpenAPI skeleton for ${allRoutes.length} route(s). Response bodies are left as TODOs — RailsForge only knows the route, not your serializers.`,
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.bumpGemVersion', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+
+      const versionFiles = await vscode.workspace.findFiles('lib/**/version.rb', resolveExcludeGlob())
+      if (versionFiles.length === 0) {
+        vscode.window.showWarningMessage('RailsForge: No lib/**/version.rb found.')
+        return
+      }
+
+      let targetUri = versionFiles[0]
+      if (versionFiles.length > 1) {
+        const picked = await vscode.window.showQuickPick(
+          versionFiles.map(uri => ({ label: vscode.workspace.asRelativePath(uri), uri })),
+          { placeHolder: 'Multiple version.rb files found — pick one' },
+        )
+        if (!picked) {return}
+        targetUri = picked.uri
+      }
+
+      const content = fs.readFileSync(targetUri.fsPath, 'utf8')
+      const currentVersion = parseVersion(content)
+      if (!currentVersion) {
+        vscode.window.showWarningMessage(`RailsForge: Couldn't find a VERSION assignment in ${vscode.workspace.asRelativePath(targetUri)}.`)
+        return
+      }
+
+      const choice = await vscode.window.showQuickPick(
+        (['patch', 'minor', 'major'] as VersionBumpPart[]).map(part => ({
+          label: `${part} → ${bumpVersion(currentVersion, part)}`,
+          part,
+        })),
+        { placeHolder: `Current version: ${currentVersion}` },
+      )
+      if (!choice) {return}
+
+      const newVersion = bumpVersion(currentVersion, choice.part)
+      fs.writeFileSync(targetUri.fsPath, replaceVersionInContent(content, newVersion), 'utf8')
+
+      const doc = await vscode.workspace.openTextDocument(targetUri)
+      await vscode.window.showTextDocument(doc)
+      vscode.window.showInformationMessage(`RailsForge: Bumped version to ${newVersion} in ${vscode.workspace.asRelativePath(targetUri)}.`)
+    }),
+    vscode.commands.registerCommand('railsforge.releaseGem', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: No workspace folder open.')
+        return
+      }
+
+      const choice = await vscode.window.showWarningMessage(
+        'This runs "bundle exec rake release", which builds the gem, creates and pushes a git tag, and publishes it to RubyGems.org. This cannot be undone. Continue?',
+        { modal: true },
+        'Run bundle exec rake release',
+      )
+      if (choice !== 'Run bundle exec rake release') {return}
+
+      const term = vscode.window.createTerminal({ name: 'RailsForge Release', cwd: root })
+      term.show()
+      term.sendText('bundle exec rake release')
+    }),
     vscode.commands.registerCommand('railsforge.exportCursorRules', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
       if (!root) {
@@ -769,8 +860,9 @@ function registerCommands(
         return
       }
 
+      const mcpEnabled = readConfig().mcpEnabled
       const mcpServerPath = path.join(context.extensionPath, 'dist', 'mcp', 'server.js')
-      const mcpServerAvailable = fs.existsSync(mcpServerPath)
+      const mcpServerAvailable = mcpEnabled && fs.existsSync(mcpServerPath)
 
       const content = buildCursorRulesContent({
         rubyVersion: env.rubyVersion,
@@ -796,7 +888,9 @@ function registerCommands(
       vscode.window.showInformationMessage(
         mcpServerAvailable
           ? 'RailsForge: Exported .cursor/rules/railsforge.mdc and registered the railsforge MCP server in .cursor/mcp.json.'
-          : 'RailsForge: Exported .cursor/rules/railsforge.mdc.',
+          : mcpEnabled
+            ? 'RailsForge: Exported .cursor/rules/railsforge.mdc. (MCP server not bundled in this build — skipped registration.)'
+            : 'RailsForge: Exported .cursor/rules/railsforge.mdc. (railsForge.mcp.enabled is false — skipped MCP server registration.)',
       )
     }),
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {

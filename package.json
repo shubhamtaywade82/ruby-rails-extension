@@ -283,6 +283,21 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.generateApiDocs",
+        "title": "RailsForge: Generate OpenAPI Skeleton",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.bumpGemVersion",
+        "title": "RailsForge: Bump Gem Version",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.releaseGem",
+        "title": "RailsForge: Release Gem (bundle exec rake release)",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.exportCursorRules",
         "title": "RailsForge: Export Cursor Rules & Register MCP Server",
         "category": "RailsForge"
@@ -403,6 +418,18 @@
         {
           "command": "railsforge.setAiApiKey",
           "when": "railsforge.aiProvider != 'ollama'"
+        },
+        {
+          "command": "railsforge.generateApiDocs",
+          "when": "railsforge.isRailsApp && railsforge.apiDocsEnabled"
+        },
+        {
+          "command": "railsforge.bumpGemVersion",
+          "when": "railsforge.projectType == 'gem'"
+        },
+        {
+          "command": "railsforge.releaseGem",
+          "when": "railsforge.projectType == 'gem'"
         },
         {
           "command": "railsforge.goToModel",
