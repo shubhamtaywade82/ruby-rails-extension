@@ -619,6 +619,15 @@ RailsForge activates on **any Ruby file or Gemfile** — not only full Rails app
 
 Pattern catalog matches `services/`, `queries/`, `forms/`, `policies/`, `decorators/`, `concerns/` **anywhere in the path** — so `lib/my_gem/services/*.rb` is indexed identically to `app/services/*.rb`.
 
+**Project type classification (`ProjectEnvironment.projectType`):** every workspace is further classified as one of `monolith` | `api_only` | `gem` | `script`, shown in the Architecture sidebar and passed through to `@rails`/Cursor grounding via `CursorRulesGenerator`:
+
+| projectType | Detected when | AI grounding note |
+| :--- | :--- | :--- |
+| `monolith` | `hasRails` and not API-only | none (full MVC assumed) |
+| `api_only` | `hasRails` and `config.api_only = true` in `config/application.rb`, or `ApplicationController < ActionController::API` | "don't suggest ERB/HAML/Slim views, helpers, or the asset pipeline" |
+| `gem` | not `hasRails` and a `*.gemspec` exists at the workspace root | "don't assume ActiveRecord/ActionController APIs are available" |
+| `script` | not `hasRails` and no `.gemspec` | none beyond the existing standalone-Ruby note |
+
 ---
 
 ### F-20 Editing Aids: Endwise, ERB Tags & Gem Lens

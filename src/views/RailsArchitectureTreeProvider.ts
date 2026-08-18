@@ -3,7 +3,7 @@
  */
 
 import * as vscode from 'vscode'
-import { ProjectEnvironment } from '../environment/EnvironmentDetector'
+import { ProjectEnvironment, formatProjectType } from '../environment/EnvironmentDetector'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { StimulusIndexer } from '../hotwire/StimulusIndexer'
@@ -64,7 +64,7 @@ export class RailsArchitectureTreeProvider implements vscode.TreeDataProvider<Ar
       new ArchitectureItem(
         'Runtime Environment',
         vscode.TreeItemCollapsibleState.Expanded,
-        `Ruby ${this.env.rubyVersion} | ${this.env.hasRails ? `Rails ${this.env.railsVersion}` : 'Not a Rails app'}`,
+        `Ruby ${this.env.rubyVersion} | ${this.env.hasRails ? `Rails ${this.env.railsVersion}` : 'Not a Rails app'} | ${formatProjectType(this.env.projectType)}`,
         new vscode.ThemeIcon('ruby'),
       ),
       new ArchitectureItem(
@@ -86,6 +86,7 @@ export class RailsArchitectureTreeProvider implements vscode.TreeDataProvider<Ar
     return [
       new ArchitectureItem(`Ruby: ${this.env.rubyVersion}`, vscode.TreeItemCollapsibleState.None),
       new ArchitectureItem(`Rails: ${this.env.hasRails ? this.env.railsVersion : 'Not detected (standalone Ruby project)'}`, vscode.TreeItemCollapsibleState.None),
+      new ArchitectureItem(`Project Type: ${formatProjectType(this.env.projectType)}`, vscode.TreeItemCollapsibleState.None),
       new ArchitectureItem(`Hotwire / Turbo: ${this.env.hasHotwire ? 'Active ✓' : 'Inactive ✗'}`, vscode.TreeItemCollapsibleState.None),
       new ArchitectureItem(`Testing Framework: ${this.env.testFramework.toUpperCase()}`, vscode.TreeItemCollapsibleState.None),
       new ArchitectureItem(`Strong Migrations: ${this.env.hasStrongMigrations ? 'Enabled ✓' : 'Disabled ✗'}`, vscode.TreeItemCollapsibleState.None),

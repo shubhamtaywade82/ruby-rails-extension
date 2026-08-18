@@ -671,6 +671,7 @@ function registerCommands(
         rubyVersion: env.rubyVersion,
         railsVersion: env.hasRails ? env.railsVersion : undefined,
         hasRails: env.hasRails,
+        projectType: env.projectType,
         tables: schemaIndexer.getAllTables(),
         routes: routes.getAllRoutes(),
         patterns: projectPatternIndexer.getAllPatterns(),
