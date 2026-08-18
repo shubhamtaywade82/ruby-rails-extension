@@ -3,7 +3,7 @@
  */
 
 import * as vscode from 'vscode'
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 
 export class TestExplorerController {
   private testController: vscode.TestController
@@ -65,8 +65,10 @@ export class TestExplorerController {
       if (token.isCancellationRequested) {break}
       run.started(test)
 
-      const cmd = this.buildTestCommand(test)
-      exec(cmd, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath }, (error, stdout, stderr) => {
+      // execFile (not exec/a shell string) so the file path — which can contain
+      // arbitrary characters in an untrusted workspace — is never interpreted by a shell.
+      const [command, args] = this.buildTestCommand(test)
+      execFile(command, args, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath }, (error, stdout, stderr) => {
         if (error) {
           run.failed(test, new vscode.TestMessage(stderr || stdout || error.message))
         } else {
@@ -78,15 +80,14 @@ export class TestExplorerController {
     run.end()
   }
 
-  private buildTestCommand(item: vscode.TestItem): string {
+  private buildTestCommand(item: vscode.TestItem): [string, string[]] {
     const uri = item.uri?.fsPath ?? ''
     const isRSpec = uri.includes('/spec/')
-    const line = item.range ? `:${item.range.start.line + 1}` : ''
+    const target = item.range ? `${uri}:${item.range.start.line + 1}` : uri
 
-    if (isRSpec) {
-      return `bundle exec rspec "${uri}${line}"`
-    }
-    return `bundle exec rails test "${uri}${line}"`
+    return isRSpec
+      ? ['bundle', ['exec', 'rspec', target]]
+      : ['bundle', ['exec', 'rails', 'test', target]]
   }
 
   dispose(): void {

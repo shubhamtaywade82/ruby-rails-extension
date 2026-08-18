@@ -1216,6 +1216,16 @@ function registerCommands(
  * Minitest gem/script test runs the whole file instead of one line — Minitest itself has
  * no universal line-based selection.
  */
+/**
+ * POSIX single-quote escaping for a string embedded in a shell command line sent via
+ * `Terminal.sendText` — VS Code's Terminal API only accepts a command string, not
+ * execFile-style argv, so this is the safe way to embed a file path (which can contain
+ * arbitrary characters in an untrusted workspace) without it being interpreted by the shell.
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
 function buildSingleTestCommand(uri: vscode.Uri, line: number, env: ProjectEnvironment): string {
   const isRSpec = uri.fsPath.includes('/spec/')
     ? true
@@ -1223,12 +1233,13 @@ function buildSingleTestCommand(uri: vscode.Uri, line: number, env: ProjectEnvir
       ? false
       : readConfig().testingFramework === 'rspec'
 
+  const path = shellQuote(uri.fsPath)
   if (isRSpec) {
-    return `bundle exec rspec "${uri.fsPath}:${line}"`
+    return `bundle exec rspec ${shellQuote(`${uri.fsPath}:${line}`)}`
   }
   return env.hasRails
-    ? `bundle exec rails test "${uri.fsPath}:${line}"`
-    : `bundle exec ruby -Itest "${uri.fsPath}"`
+    ? `bundle exec rails test ${shellQuote(`${uri.fsPath}:${line}`)}`
+    : `bundle exec ruby -Itest ${path}`
 }
 
 function navigateCompanion(mvc: MVCNavigator, targetType: string): void {

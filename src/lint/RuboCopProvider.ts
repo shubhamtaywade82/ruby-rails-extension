@@ -3,10 +3,10 @@
  */
 
 import * as vscode from 'vscode'
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export interface RuboCopOffense {
   severity: 'info' | 'refactor' | 'convention' | 'warning' | 'error' | 'fatal'
@@ -39,22 +39,32 @@ export class RuboCopProvider implements vscode.CodeActionProvider {
   }
 
   private async runRuboCop(filePath: string): Promise<RuboCopOffense[]> {
-    const cmd = `bundle exec rubocop --format json "${filePath}" || rubocop --format json "${filePath}"`
+    // execFile (not exec/a shell string) so `filePath` — which can contain arbitrary
+    // characters in an untrusted workspace — is never interpreted by a shell.
+    const args = ['--format', 'json', filePath]
+    const viaBundle = await this.tryRuboCop('bundle', ['exec', 'rubocop', ...args])
+    if (viaBundle) {return viaBundle}
+    return (await this.tryRuboCop('rubocop', args)) ?? []
+  }
+
+  /** Runs one rubocop invocation; returns null (not []) only when it couldn't produce usable output at all, so the caller knows to try the next command instead of accepting "zero offenses". */
+  private async tryRuboCop(command: string, args: string[]): Promise<RuboCopOffense[] | null> {
     try {
-      const { stdout } = await execAsync(cmd, { maxBuffer: 10 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(command, args, { maxBuffer: 10 * 1024 * 1024 })
+      return this.parseOffenses(stdout)
+    } catch (err: unknown) {
+      // RuboCop exits non-zero when it finds offenses, even though stdout still holds valid JSON.
+      const execErr = err as { stdout?: string }
+      return execErr.stdout ? this.parseOffenses(execErr.stdout) : null
+    }
+  }
+
+  private parseOffenses(stdout: string): RuboCopOffense[] | null {
+    try {
       const parsed = JSON.parse(stdout)
       return parsed.files?.[0]?.offenses ?? []
-    } catch (err: unknown) {
-      const execErr = err as { stdout?: string }
-      if (execErr.stdout) {
-        try {
-          const parsed = JSON.parse(execErr.stdout)
-          return parsed.files?.[0]?.offenses ?? []
-        } catch {
-          return []
-        }
-      }
-      return []
+    } catch {
+      return null
     }
   }
 
@@ -130,12 +140,17 @@ export class RuboCopProvider implements vscode.CodeActionProvider {
 
   async autoCorrectFile(uri: vscode.Uri, mode: 'safe' | 'unsafe' = 'safe'): Promise<boolean> {
     const flag = mode === 'unsafe' ? '-A' : '-a'
-    const cmd = `bundle exec rubocop ${flag} "${uri.fsPath}" || rubocop ${flag} "${uri.fsPath}"`
+    const args = [flag, uri.fsPath]
     try {
-      await execAsync(cmd)
+      await execFileAsync('bundle', ['exec', 'rubocop', ...args])
       return true
     } catch {
-      return false
+      try {
+        await execFileAsync('rubocop', args)
+        return true
+      } catch {
+        return false
+      }
     }
   }
 
