@@ -78,6 +78,30 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
     }
   }
 
+  private static readonly PIPELINE_METHODS = new Set([
+    'all', 'all?', 'ancestors', 'any', 'any?', 'append', 'as_json', 'blank?', 'class', 'clear',
+    'clone', 'collect', 'compact', 'compact!', 'compact_blank', 'concat', 'count', 'delete',
+    'delete_at', 'delete_if', 'dequeue', 'detect', 'dig', 'distinct', 'downcase', 'drop',
+    'dup', 'each', 'each_with_index', 'each_with_object', 'eager_load', 'empty?', 'enqueue',
+    'entries', 'fetch', 'filter', 'filter_map', 'find', 'find_all', 'find_by', 'find_each',
+    'find_in_batches', 'first', 'flat_map', 'flatten', 'flatten!', 'freeze', 'frozen?',
+    'grep', 'group', 'group_by', 'having', 'includes', 'inject', 'insert', 'inspect', 'itself',
+    'join', 'joins', 'keep_if', 'keys', 'last', 'left_joins', 'length', 'limit', 'map', 'match',
+    'match?', 'max', 'max_by', 'member?', 'merge', 'min', 'min_by', 'nil?', 'none', 'none?',
+    'offset', 'one?', 'order', 'partition', 'pluck', 'pop', 'preload', 'prepend', 'presence',
+    'present?', 'public_send', 'push', 'reduce', 'reject', 'reorder', 'replace', 'reselect',
+    'respond_to?', 'reverse', 'reverse!', 'rewhere', 'rotate', 'sample', 'scan', 'select',
+    'send', 'shift', 'shuffle', 'size', 'slice', 'slice!', 'sort', 'sort!', 'sort_by',
+    'split', 'squeeze', 'strip', 'sub', 'gsub', 'sum', 'superclass', 'take', 'tally', 'tap',
+    'then', 'to_a', 'to_f', 'to_h', 'to_i', 'to_json', 'to_s', 'to_sym', 'transform_keys',
+    'transform_values', 'tr', 'uniq', 'uniq!', 'unshift', 'unscope', 'upcase', 'values',
+    'where', 'with_indifferent_access', 'yield_self', 'zip',
+  ])
+
+  private static readonly UTILITY_ROOTS = new Set([
+    'Rails', 'ENV', 'Logger', 'JSON', 'YAML', 'File', 'Dir', 'Pathname', 'URI', 'DateTime', 'Time', 'Date', 'config',
+  ])
+
   private checkLawOfDemeter(lines: string[], list: PrincipleDiagnostic[]): void {
     const demeterRegex = /\b([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){3,})\b/
     for (let i = 0; i < lines.length; i++) {
@@ -85,17 +109,24 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
       if (line.trim().startsWith('#')) {continue}
 
       const match = demeterRegex.exec(line)
-      if (match && !match[1].includes('Rails.application') && !match[1].includes('config.')) {
-        const segments = match[1].split('.')
-        list.push({
-          id: 'DEMETER-VIOLATION',
-          title: 'Law of Demeter Violation',
-          message: `Deep association chain detected: '${match[1]}'. Use 'delegate :method, to: :assoc' or encapsulate in a model method.`,
-          line: i + 1,
-          severity: vscode.DiagnosticSeverity.Warning,
-          demeter: { receiver: segments[0], method: segments[segments.length - 1] },
-        })
-      }
+      if (!match) {continue}
+
+      const segments = match[1].split('.')
+      const root = segments[0]
+      if (DesignPrincipleLinter.UTILITY_ROOTS.has(root)) {continue}
+
+      // Method chains involving collection transforms or query builders are fluent pipelines, not Demeter violations.
+      const isPipeline = segments.slice(1).some(seg => DesignPrincipleLinter.PIPELINE_METHODS.has(seg))
+      if (isPipeline) {continue}
+
+      list.push({
+        id: 'DEMETER-VIOLATION',
+        title: 'Law of Demeter Violation',
+        message: `Deep association chain detected: '${match[1]}'. Use 'delegate :method, to: :assoc' or encapsulate in a model method.`,
+        line: i + 1,
+        severity: vscode.DiagnosticSeverity.Warning,
+        demeter: { receiver: root, method: segments[segments.length - 1] },
+      })
     }
   }
 
@@ -198,7 +229,8 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
         actions.push(extractAction)
       }
 
-      if (diag.code === 'DEMETER-VIOLATION' && meta?.demeter) {
+      const isRailsApp = document.fileName.includes('/app/')
+      if (diag.code === 'DEMETER-VIOLATION' && meta?.demeter && isRailsApp) {
         const { receiver, method } = meta.demeter
         const delegateAction = new vscode.CodeAction(
           `Add 'delegate :${method}, to: :${receiver}'`,
@@ -232,7 +264,7 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
     return actions
   }
 
-  /** Inserts `delegate :method, to: :receiver` on the line right after the enclosing `class` line. */
+  /** Inserts `delegate :method, to: :receiver` with matching indentation right after the enclosing `class` line. */
   private buildDelegateEdit(document: vscode.TextDocument, violationLine: number, receiver: string, method: string): vscode.WorkspaceEdit {
     const edit = new vscode.WorkspaceEdit()
     let classLine = -1
@@ -244,8 +276,9 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
     }
     if (classLine === -1) {return edit}
 
+    const classIndent = document.lineAt(classLine).text.match(/^\s*/)?.[0] ?? ''
     const insertAt = new vscode.Position(classLine + 1, 0)
-    edit.insert(document.uri, insertAt, `  delegate :${method}, to: :${receiver}\n`)
+    edit.insert(document.uri, insertAt, `${classIndent}  delegate :${method}, to: :${receiver}\n`)
     return edit
   }
 

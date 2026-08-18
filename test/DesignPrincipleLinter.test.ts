@@ -20,6 +20,37 @@ describe('DesignPrincipleLinter', () => {
     expect(list[0].demeter).toEqual({ receiver: 'user', method: 'city' })
   })
 
+  it('ignores standard Enumerable and data transformation pipelines for Law of Demeter', () => {
+    const lines = [
+      'def tool_definitions',
+      '  @tools.keys.sort.map do |key|',
+      '    key.to_s',
+      '  end',
+      '  @api_keys = source.api_keys.dup.freeze',
+      '  item = self.class.global_queue.shift',
+      'end',
+    ]
+
+    const list: PrincipleDiagnostic[] = []
+    linter['checkLawOfDemeter'](lines, list)
+
+    expect(list.length).toBe(0)
+  })
+
+  it('ignores ActiveRecord query builder chains and utility roots for Law of Demeter', () => {
+    const lines = [
+      'def active_emails',
+      '  User.where(active: true).order(:created_at).limit(10).pluck(:email)',
+      '  Rails.application.config.action_mailer.default_url_options',
+      'end',
+    ]
+
+    const list: PrincipleDiagnostic[] = []
+    linter['checkLawOfDemeter'](lines, list)
+
+    expect(list.length).toBe(0)
+  })
+
   it('flags dynamic metaprogramming for KISS principle', () => {
     const lines = [
       'class DynamicModel',

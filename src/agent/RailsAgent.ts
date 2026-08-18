@@ -172,10 +172,12 @@ export class RailsAgent {
    * so callers can show a clean "AI fix unavailable" message instead of a stack trace.
    */
   async suggestCodeFix(code: string, diagnosticMessage: string, context: RailsAgentContext): Promise<string | null> {
+    const isFullFile = code.trim().startsWith('# frozen_string_literal') || /^class\s+[A-Z]/.test(code.trim())
     const instruction = [
-      `Fix the following Ruby code so it no longer triggers this issue: "${diagnosticMessage}".`,
+      `Fix the following Ruby snippet so it no longer triggers this issue: "${diagnosticMessage}".`,
+      'Replace ONLY the targeted snippet. Do NOT output the entire file, class, or module.',
       'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
-      'Respond with ONLY the corrected Ruby code. No explanation, no markdown code fences.',
+      'Respond with ONLY the replacement Ruby code for this snippet. No explanation, no markdown code fences.',
       '',
       code,
     ].join('\n')
@@ -184,7 +186,14 @@ export class RailsAgent {
     if (!result.success) {return null}
 
     const cleaned = result.response.trim().replace(/^```(?:ruby)?\n?/, '').replace(/\n?```$/, '')
-    return cleaned.length > 0 ? cleaned : null
+    if (!cleaned) {return null}
+
+    // Safety guard: reject hallucinated full-file rewrites when replacing a single snippet
+    if (!isFullFile && (/^#\s*frozen_string_literal/m.test(cleaned) || /^module\s+[A-Z]/m.test(cleaned))) {
+      return null
+    }
+
+    return cleaned
   }
 
   /**
