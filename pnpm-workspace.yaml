@@ -2,9 +2,9 @@ packages:
   - "."
 
 allowBuilds:
-  '@vscode/vsce-sign': false
-  better-sqlite3: false
-  esbuild: false
-  keytar: false
-  tree-sitter: false
-  tree-sitter-ruby: false
+  '@vscode/vsce-sign': true
+  better-sqlite3: true
+  esbuild: true
+  keytar: true
+  tree-sitter: true
+  tree-sitter-ruby: true
