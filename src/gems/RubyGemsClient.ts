@@ -6,6 +6,8 @@
  * EmbeddingClient signals an unreachable Ollama host.
  */
 
+import { LruCache } from '../util/LruCache'
+
 export interface GemInfo {
   name: string
   version: string
@@ -24,12 +26,15 @@ interface RubyGemsApiResponse {
 }
 
 export class RubyGemsClient {
-  private cache: Map<string, GemInfo | null> = new Map()
+  private cache: LruCache<string, GemInfo | null>
+
+  constructor(maxCacheSize = 200) {
+    this.cache = new LruCache(maxCacheSize)
+  }
 
   async fetchGemInfo(name: string): Promise<GemInfo | null> {
-    if (this.cache.has(name)) {
-      return this.cache.get(name) ?? null
-    }
+    const cached = this.cache.get(name)
+    if (cached !== undefined) {return cached}
 
     const info = await this.request(name)
     this.cache.set(name, info)

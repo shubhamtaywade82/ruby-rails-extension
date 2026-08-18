@@ -10,6 +10,7 @@
  */
 
 import { ProjectPatternIndexer, IndexedPattern } from '../patterns/ProjectPatternIndexer'
+import { LruCache } from '../util/LruCache'
 
 export type EmbedFn = (text: string) => Promise<number[] | null>
 
@@ -19,14 +20,22 @@ export interface SearchResult {
   matchedBy: 'semantic' | 'keyword'
 }
 
+interface EmbeddingCacheEntry {
+  vector: number[]
+  /** Content fingerprint at embed time — a mismatch means the pattern changed and needs re-embedding. */
+  contentKey: string
+}
+
 export class SemanticSearchIndex {
-  private embeddings: Map<string, number[]> = new Map()
-  private embeddedContentKey: Map<string, string> = new Map()
+  private cache: LruCache<string, EmbeddingCacheEntry>
 
   constructor(
     private patternIndexer: ProjectPatternIndexer,
     private embed: EmbedFn,
-  ) {}
+    maxCacheSize = 200,
+  ) {
+    this.cache = new LruCache(maxCacheSize)
+  }
 
   async search(query: string, limit = 10): Promise<SearchResult[]> {
     const trimmed = query.trim()
@@ -48,7 +57,7 @@ export class SemanticSearchIndex {
     await this.ensureEmbedded(patterns)
 
     return patterns
-      .map(pattern => ({ pattern, vector: this.embeddings.get(pattern.id) }))
+      .map(pattern => ({ pattern, vector: this.cache.get(pattern.id)?.vector }))
       .filter((entry): entry is { pattern: IndexedPattern; vector: number[] } => entry.vector !== undefined)
       .map(entry => ({ pattern: entry.pattern, score: cosineSimilarity(queryVector, entry.vector), matchedBy: 'semantic' as const }))
       .filter(entry => entry.score > 0)
@@ -59,12 +68,11 @@ export class SemanticSearchIndex {
   private async ensureEmbedded(patterns: IndexedPattern[]): Promise<void> {
     for (const pattern of patterns) {
       const key = this.contentKey(pattern)
-      if (this.embeddedContentKey.get(pattern.id) === key) {continue}
+      if (this.cache.get(pattern.id)?.contentKey === key) {continue}
 
       const vector = await this.embed(this.embeddingText(pattern))
       if (vector) {
-        this.embeddings.set(pattern.id, vector)
-        this.embeddedContentKey.set(pattern.id, key)
+        this.cache.set(pattern.id, { vector, contentKey: key })
       }
     }
   }
@@ -100,10 +108,9 @@ export class SemanticSearchIndex {
   /** Drops cached embeddings for patterns no longer in the indexer (e.g. after a file delete). */
   pruneStale(): void {
     const liveIds = new Set(this.patternIndexer.getAllPatterns().map(p => p.id))
-    for (const id of this.embeddings.keys()) {
+    for (const id of Array.from(this.cache.keys())) {
       if (!liveIds.has(id)) {
-        this.embeddings.delete(id)
-        this.embeddedContentKey.delete(id)
+        this.cache.delete(id)
       }
     }
   }

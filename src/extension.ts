@@ -64,6 +64,7 @@ import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 
 export function activate(context: vscode.ExtensionContext): void {
+  const config = readConfig()
   const schemaIndexer = new SchemaIndexer()
   const routesIndexer = new RoutesIndexer()
   const mvcNavigator = new MVCNavigator()
@@ -89,7 +90,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const stimulusIndexer = new StimulusIndexer()
   const turboFrameNavigator = new TurboFrameNavigator()
   const viewPartialResolver = new ViewPartialResolver()
-  const rubyGemsClient = new RubyGemsClient()
+  const rubyGemsClient = new RubyGemsClient(config.performanceCacheSize)
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -105,7 +106,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
   const env: ProjectEnvironment = envDetector.detectEnvironment(workspaceRoot)
-  const config = readConfig()
   if (config.projectTypeOverride !== 'auto') {
     env.projectType = config.projectTypeOverride
   }
@@ -143,7 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ollamaHost,
     model: config.ollamaEmbeddingModel,
   })
-  const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text))
+  const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text), config.performanceCacheSize)
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
   const chatViewProvider = new RailsChatViewProvider(
