@@ -193,9 +193,9 @@ Real-time indexing of `config/routes.rb` with full autocompletion and navigation
 
 ### F-04 View & Partial Navigation
 
-**Source:** [`rails/ViewPartialResolver.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/rails/ViewPartialResolver.ts), [`rails/ViewComponentResolver.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/rails/ViewComponentResolver.ts)
+**Source:** [`rails/ViewPartialResolver.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/rails/ViewPartialResolver.ts), [`rails/ViewPartialDefinitionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/rails/ViewPartialDefinitionProvider.ts), [`rails/ViewComponentResolver.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/rails/ViewComponentResolver.ts)
 
-`Ctrl+Click` (or `Cmd+Click`) on any render call jumps directly to the partial or component file.
+`Ctrl+Click` (or `Cmd+Click`) on any quoted `render` path jumps directly to the resolved partial.
 
 **Supported patterns:**
 
@@ -204,15 +204,16 @@ Real-time indexing of `config/routes.rb` with full autocompletion and navigation
 | `render "shared/navbar"` | `app/views/shared/_navbar.html.erb` |
 | `render partial: "users/card"` | `app/views/users/_card.html.erb` |
 | `render "users/card", locals: {…}` | (same as above) |
-| `render UserCardComponent.new(…)` | `app/components/user_card_component.rb` + `user_card_component.html.erb` |
 
 **Supported template extensions**: `.erb`, `.html.erb`, `.haml`, `.slim`
+
+ViewComponent lookups (`render UserCardComponent.new(…)`) are resolved via the `RailsForge: Go to ViewComponent` command (`railsforge.goToComponent`) rather than Ctrl+Click, since the render target is a Ruby object expression, not a quoted string.
 
 ---
 
 ### F-05 Hotwire, Stimulus & Turbo Intelligence
 
-**Source:** [`hotwire/StimulusIndexer.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusIndexer.ts), [`hotwire/StimulusCompletionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusCompletionProvider.ts), [`hotwire/TurboFrameNavigator.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/TurboFrameNavigator.ts)
+**Source:** [`hotwire/StimulusIndexer.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusIndexer.ts), [`hotwire/StimulusCompletionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusCompletionProvider.ts), [`hotwire/StimulusAttributeParser.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusAttributeParser.ts), [`hotwire/StimulusDefinitionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/StimulusDefinitionProvider.ts), [`hotwire/TurboFrameNavigator.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/TurboFrameNavigator.ts), [`hotwire/TurboFrameDefinitionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/hotwire/TurboFrameDefinitionProvider.ts)
 
 Full IDE intelligence for Hotwire (Stimulus + Turbo) inside ERB/HAML/Slim templates.
 
@@ -222,12 +223,14 @@ Full IDE intelligence for Hotwire (Stimulus + Turbo) inside ERB/HAML/Slim templa
 - Autocompletes `data-action` format: `click->controller#action` — resolves the controller class and its action methods
 - Autocompletes `data-[controller]-target` values from the controller's `static targets` array
 
-**Turbo Frame Navigation:**
-- Jump to definition and find references for `<%= turbo_frame_tag "cart" %>` and `<turbo-frame id="cart">` across view templates
-- Resolves frame IDs cross-file so you can trace the complete Turbo Frame chain
+**Stimulus ↔ TypeScript/JavaScript Navigation:**
+- `Ctrl+Click` / `Cmd+Click` on a `data-controller="foo"` identifier jumps straight to `foo_controller.js`/`.ts`, honoring multiple space-separated identifiers on the same attribute
+- `Ctrl+Click` / `Cmd+Click` on a `data-action="click->foo#bar"` descriptor jumps to the exact `bar()` method inside the controller file
 
-> [!NOTE]
-> Phase 15 (Stimulus ↔ TypeScript `Cmd+Click` cross-linking between `data-controller` and the `.ts` file) is the sole remaining roadmap item.
+**Turbo Frame Navigation:**
+- `Ctrl+Click` / `Cmd+Click` on `<%= turbo_frame_tag "cart" %>` or `<turbo-frame id="cart">` jumps to every other occurrence of that frame id across `app/views/**`
+- Resolves frame IDs cross-file so you can trace the complete Turbo Frame chain
+- Live re-indexing: `app/views/**/*.{erb,haml,slim}` is scanned on startup and re-indexed on save/create/delete
 
 ---
 
@@ -688,12 +691,15 @@ Extension Host (extension.ts)
 │   ├── RoutesIndexer          ← parses config/routes.rb
 │   ├── MVCNavigator           ← Alt+R keybindings
 │   ├── ViewPartialResolver    ← Ctrl+Click on render
+│   ├── ViewPartialDefinitionProvider
 │   └── ViewComponentResolver  ← ViewComponent jump
 │
 ├── Hotwire
 │   ├── StimulusIndexer        ← app/javascript/controllers/
 │   ├── StimulusCompletionProvider
-│   └── TurboFrameNavigator
+│   ├── StimulusDefinitionProvider  ← Ctrl+Click data-controller/data-action
+│   ├── TurboFrameNavigator
+│   └── TurboFrameDefinitionProvider ← Ctrl+Click turbo_frame_tag / turbo-frame
 │
 ├── Lint & Security
 │   ├── RuboCopProvider        ← live diagnostics + quick fixes
@@ -791,6 +797,6 @@ RailsForge is a **companion** to Shopify's `ruby-lsp` — not a replacement.
 | 12 | AST index (tree-sitter + SQLite, worker thread) | ✅ Done |
 | 13 | DuplicateCallSiteFinder + SpecFileGenerator | ✅ Done |
 | 14 | MCP server + Cursor Rules export | ✅ Done |
-| 15 | Stimulus ↔ TypeScript `Cmd+Click` cross-linking | 🔲 Pending |
+| 15 | Stimulus ↔ TypeScript `Cmd+Click` cross-linking, Turbo Frame & partial `Ctrl+Click` navigation | ✅ Done |
 
 **Package:** `railsforge.vsix` (~11 MB) — verified end-to-end with `vsce package --no-dependencies`.

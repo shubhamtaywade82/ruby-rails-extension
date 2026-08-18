@@ -21,7 +21,11 @@ import { ViewComponentResolver } from './rails/ViewComponentResolver'
 import { MigrationDiagnostics } from './rails/MigrationDiagnostics'
 import { StimulusIndexer } from './hotwire/StimulusIndexer'
 import { StimulusCompletionProvider } from './hotwire/StimulusCompletionProvider'
+import { StimulusDefinitionProvider } from './hotwire/StimulusDefinitionProvider'
 import { TurboFrameNavigator } from './hotwire/TurboFrameNavigator'
+import { TurboFrameDefinitionProvider } from './hotwire/TurboFrameDefinitionProvider'
+import { ViewPartialResolver } from './rails/ViewPartialResolver'
+import { ViewPartialDefinitionProvider } from './rails/ViewPartialDefinitionProvider'
 import { TestExplorerController } from './testing/TestExplorerController'
 import { TestCodeLensProvider } from './testing/TestCodeLensProvider'
 import { EnvironmentDetector, ProjectEnvironment } from './environment/EnvironmentDetector'
@@ -77,6 +81,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const viewComponentResolver = new ViewComponentResolver()
   const stimulusIndexer = new StimulusIndexer()
   const turboFrameNavigator = new TurboFrameNavigator()
+  const viewPartialResolver = new ViewPartialResolver()
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -148,9 +153,12 @@ export function activate(context: vscode.ExtensionContext): void {
     patternDiagnostics.scanWorkspace()
     void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
+    void loadTurboFrames(turboFrameNavigator)
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
     watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
+    watchStimulusControllers(context, stimulusIndexer)
+    watchTurboFrameTemplates(context, turboFrameNavigator)
   }
 
   // 3. Activity Bar Tree Views
@@ -168,6 +176,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
     vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, factoryBotResolver),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html'], new StimulusDefinitionProvider(stimulusIndexer)),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html', 'ruby'], new TurboFrameDefinitionProvider(turboFrameNavigator)),
+    vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'ruby'], new ViewPartialDefinitionProvider(viewPartialResolver)),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, rubocopProvider),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, migrationDiagnostics),
     vscode.languages.registerCodeActionsProvider({ language: 'ruby', scheme: 'file' }, deprecationLinter),
@@ -297,6 +308,41 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
     }
   }
 }
+
+function watchStimulusControllers(context: vscode.ExtensionContext, indexer: StimulusIndexer): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/app/javascript/controllers/**/*_controller.{js,ts}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      indexer.parseControllerCode(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    }
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  context.subscriptions.push(watcher)
+}
+
+async function loadTurboFrames(navigator: TurboFrameNavigator): Promise<void> {
+  const files = await vscode.workspace.findFiles('app/views/**/*.{erb,haml,slim}', '**/node_modules/**')
+  for (const file of files) {
+    navigator.indexTemplateFrames(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+  }
+}
+
+function watchTurboFrameTemplates(context: vscode.ExtensionContext, navigator: TurboFrameNavigator): void {
+  const watcher = vscode.workspace.createFileSystemWatcher('**/app/views/**/*.{erb,haml,slim}')
+  const reindex = (uri: vscode.Uri): void => {
+    if (fs.existsSync(uri.fsPath)) {
+      navigator.indexTemplateFrames(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
+    } else {
+      navigator.removeFile(uri.fsPath)
+    }
+  }
+  watcher.onDidChange(reindex)
+  watcher.onDidCreate(reindex)
+  watcher.onDidDelete(uri => navigator.removeFile(uri.fsPath))
+  context.subscriptions.push(watcher)
+}
+
 async function loadProjectPatterns(
   indexer: ProjectPatternIndexer,
   codeLensProvider: PatternCodeLensProvider,
