@@ -6,12 +6,12 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    name: Build & Publish Release
+  verify:
+    name: Verify & Build Release Package
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout Repository
@@ -20,7 +20,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9
+          version: 10
 
       - name: Setup Node.js 20.x
         uses: actions/setup-node@v4
@@ -31,14 +31,68 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify All Checks
+      # Fail fast, before running the (slower) checks below, if the pushed tag and
+      # package.json disagree on the version — publishing under a mismatched
+      # version is the kind of mistake that's genuinely hard to undo once it's on
+      # the Marketplace, so this is a hard gate, not a warning.
+      - name: Verify tag matches package.json version
+        id: version
         run: |
-          pnpm run lint
-          pnpm run type-check
-          pnpm test
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "Tag version: $TAG_VERSION"
+          echo "package.json version: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME (version $TAG_VERSION) does not match package.json's version ($PKG_VERSION). Bump package.json and re-tag."
+            exit 1
+          fi
+          echo "version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Run ESLint
+        run: pnpm run lint
+
+      - name: Run TypeScript Type Check
+        run: pnpm run type-check
+
+      - name: Run Vitest Unit Tests
+        run: pnpm test
 
       - name: Build Production Package
         run: pnpm run vsce-package
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: railsforge-vsix
+          path: railsforge.vsix
+          retention-days: 90
+
+  publish:
+    name: Publish Release
+    needs: verify
+    runs-on: ubuntu-latest
+    # Requires a "release" environment configured under repo Settings > Environments
+    # with required reviewers to actually gate on human approval — without that
+    # configuration this environment reference is a no-op and the job runs straight
+    # through. See README.md's "Release Process" section for setup instructions.
+    environment: release
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: railsforge-vsix
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
