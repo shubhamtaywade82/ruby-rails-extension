@@ -12,8 +12,39 @@
  */
 
 const REQUIRED_NAPI_VERSION = 10
+const REQUIRED_LINUX_GLIBC = [2, 33]
+
+export function getLinuxGlibcVersion(): string | undefined {
+  if (process.platform !== 'linux') {return undefined}
+  try {
+    const report = process.report?.getReport?.() as { header?: { glibcVersionRuntime?: string } } | undefined
+    return report?.header?.glibcVersionRuntime
+  } catch {
+    // Some sandboxed/embedded hosts (e.g. remote extension hosts) can throw here
+    // instead of returning undefined — either way, treat as "couldn't determine".
+    return undefined
+  }
+}
 
 export function isPersistentIndexSupported(): boolean {
   const napiVersion = Number(process.versions.napi)
-  return Number.isFinite(napiVersion) && napiVersion >= REQUIRED_NAPI_VERSION
+  if (!Number.isFinite(napiVersion) || napiVersion < REQUIRED_NAPI_VERSION) {
+    return false
+  }
+
+  // better-sqlite3 Linux prebuilt binary requires GLIBC >= 2.33. If the version can't be
+  // determined, fail closed — loading the addon on an unverified runtime risks the
+  // unrecoverable napi_fatal_error abort described above.
+  if (process.platform === 'linux') {
+    const glibcStr = getLinuxGlibcVersion()
+    if (!glibcStr) {
+      return false
+    }
+    const [major, minor] = glibcStr.split('.').map(Number)
+    if (major < REQUIRED_LINUX_GLIBC[0] || (major === REQUIRED_LINUX_GLIBC[0] && minor < REQUIRED_LINUX_GLIBC[1])) {
+      return false
+    }
+  }
+
+  return true
 }

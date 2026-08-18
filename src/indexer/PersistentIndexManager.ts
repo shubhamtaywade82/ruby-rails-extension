@@ -17,7 +17,7 @@ import * as path from 'path'
 import { PersistentIndexClient } from './PersistentIndexClient'
 import { PersistentDependencyGraph } from './PersistentDependencyGraph'
 import { DuplicateMethodDetector } from './DuplicateMethodDetector'
-import { isPersistentIndexSupported } from './nativeSupport'
+import { isPersistentIndexSupported, getLinuxGlibcVersion } from './nativeSupport'
 import { readConfig, buildExcludeGlob } from '../config/RailsForgeConfig'
 import { Logger } from '../util/Logger'
 
@@ -51,7 +51,8 @@ export class PersistentIndexManager implements vscode.Disposable {
     // loading that native module aborts the whole process, which no try/catch below
     // can protect against.
     if (!isPersistentIndexSupported()) {
-      Logger.warn(`RailsForge: persistent AST index needs a Node runtime with N-API >= 10 (this one reports ${process.versions.napi ?? 'none'}) — Phase 8/11/13/14 features disabled.`)
+      const glibc = process.platform === 'linux' ? ` (GLIBC: ${getLinuxGlibcVersion() ?? 'unknown'})` : ''
+      Logger.warn(`RailsForge: persistent AST SQLite index requires Node N-API >= 10 and Linux GLIBC >= 2.33${glibc}. AST cache (Phase 8/11/13/14) is skipped; all core RailsForge features remain fully active.`)
       return null
     }
 
