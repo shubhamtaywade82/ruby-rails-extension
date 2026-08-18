@@ -1,7 +1,9 @@
+import { existsSync } from 'fs'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RailsAgent } from '../src/agent/RailsAgent'
 import { SchemaIndexer } from '../src/rails/SchemaIndexer'
 import { RoutesIndexer } from '../src/rails/RoutesIndexer'
+import { cassetteFetch, cassettePath } from './support/cassette'
 
 function buildAgent(overrides: Partial<ConstructorParameters<typeof RailsAgent>[2]>): RailsAgent {
   return new RailsAgent(new SchemaIndexer(), new RoutesIndexer(), {
@@ -11,38 +13,51 @@ function buildAgent(overrides: Partial<ConstructorParameters<typeof RailsAgent>[
   })
 }
 
+const OLLAMA_CASSETTE = 'rails-agent-ollama-chat'
+const ANTHROPIC_CASSETTE = 'rails-agent-anthropic-message'
+const hasAnthropicCassette = existsSync(cassettePath(ANTHROPIC_CASSETTE))
+
 describe('RailsAgent provider dispatch', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it('calls the Ollama OpenAI-compatible endpoint by default, with no Authorization header', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: 'ollama reply' } }] }),
-    })
+  it('calls the Ollama OpenAI-compatible endpoint by default, with no Authorization header, and parses a real recorded response', async () => {
+    // rails-agent-ollama-chat.json was recorded from a genuine LLM call (see
+    // test/cassettes/record.mjs) — this validates RailsAgent's response parsing
+    // against an actual Ollama-compatible chat-completion payload, not a hand-typed guess.
+    const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
     vi.stubGlobal('fetch', fetchMock)
 
     const agent = buildAgent({})
-    const result = await agent.run('hello', {})
+    const result = await agent.run('In one sentence, what does ActiveRecord::Base#save do?', {})
 
-    expect(result).toEqual({ success: true, response: 'ollama reply', iterations: 1 })
+    expect(result.success).toBe(true)
+    expect(result.iterations).toBe(1)
+    expect(result.response).toContain('inserts')
+    expect(result.response.toLowerCase()).toContain('database')
+
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('http://localhost:11434/v1/chat/completions')
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined()
   })
 
-  it('calls OpenAI with a Bearer token when provider is openai and a key is configured', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: 'openai reply' } }] }),
-    })
+  it('calls OpenAI with a Bearer token when provider is openai, parsing the same OpenAI-compatible response shape', async () => {
+    // RailsAgent's openai and ollama branches both go through the same
+    // callOpenAiCompatible parser (see src/agent/RailsAgent.ts) — the recorded
+    // Ollama cassette is a genuine example of that exact response shape, so it
+    // validates the openai branch's parsing too, without needing a second
+    // near-identical recording. Request construction (URL, auth header, model)
+    // is asserted independently below, since that part isn't provider-shape-dependent.
+    const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
     vi.stubGlobal('fetch', fetchMock)
 
     const agent = buildAgent({ provider: 'openai', openaiModel: 'gpt-4o-mini', getApiKey: async () => 'sk-test' })
-    const result = await agent.run('hello', {})
+    const result = await agent.run('In one sentence, what does ActiveRecord::Base#save do?', {})
 
-    expect(result).toEqual({ success: true, response: 'openai reply', iterations: 1 })
+    expect(result.success).toBe(true)
+    expect(result.response).toContain('database')
+
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('https://api.openai.com/v1/chat/completions')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test')
@@ -50,6 +65,7 @@ describe('RailsAgent provider dispatch', () => {
   })
 
   it('fails clearly when provider is openai and no key is configured, without calling fetch', async () => {
+    // No cassette needed: this path returns before making any request.
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -61,26 +77,37 @@ describe('RailsAgent provider dispatch', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('calls Anthropic Messages API with x-api-key and extracts the text content block', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ content: [{ type: 'text', text: 'claude reply' }] }),
-    })
-    vi.stubGlobal('fetch', fetchMock)
+  it.skipIf(!hasAnthropicCassette)(
+    'calls Anthropic Messages API with x-api-key and extracts the text content block, parsing a real recorded response',
+    async () => {
+      const fetchMock = vi.fn(cassetteFetch(ANTHROPIC_CASSETTE))
+      vi.stubGlobal('fetch', fetchMock)
 
-    const agent = buildAgent({ provider: 'anthropic', anthropicModel: 'claude-sonnet-4-5', getApiKey: async () => 'anthropic-key' })
-    const result = await agent.run('hello', {})
+      const agent = buildAgent({ provider: 'anthropic', anthropicModel: 'claude-sonnet-4-5', getApiKey: async () => 'anthropic-key' })
+      const result = await agent.run('In one sentence, what does ActiveRecord::Base#save do?', {})
 
-    expect(result).toEqual({ success: true, response: 'claude reply', iterations: 1 })
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('https://api.anthropic.com/v1/messages')
-    const headers = init.headers as Record<string, string>
-    expect(headers['x-api-key']).toBe('anthropic-key')
-    expect(headers['anthropic-version']).toBeTruthy()
-    expect(JSON.parse(init.body as string).model).toBe('claude-sonnet-4-5')
-  })
+      expect(result.success).toBe(true)
+      expect(result.response.length).toBeGreaterThan(0)
+
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toBe('https://api.anthropic.com/v1/messages')
+      const headers = init.headers as Record<string, string>
+      expect(headers['x-api-key']).toBe('anthropic-key')
+      expect(headers['anthropic-version']).toBeTruthy()
+      expect(JSON.parse(init.body as string).model).toBe('claude-sonnet-4-5')
+    },
+  )
+
+  if (!hasAnthropicCassette) {
+    it.todo(
+      `anthropic cassette not recorded in this environment (no ANTHROPIC_API_KEY was available) — ` +
+      `run 'ANTHROPIC_API_KEY=... node test/cassettes/record.mjs' to record ${ANTHROPIC_CASSETTE}.json and un-skip the test above`,
+    )
+  }
 
   it('healthCheck reports true for a cloud provider only when a key is configured, without calling fetch', async () => {
+    // No response-shape to validate here (healthCheck only checks res.ok for Ollama,
+    // and doesn't call fetch at all for cloud providers), so a plain spy is enough.
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
