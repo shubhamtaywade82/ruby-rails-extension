@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # pnpm reads/writes the standard npm manifest files, so the npm ecosystem covers it.
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    groups:
+      # Native-module deps (better-sqlite3, tree-sitter*) and VS Code build tooling
+      # (@vscode/vsce, webpack, ts-loader) are the highest-blast-radius updates in
+      # this repo — keep them as individual PRs instead of bundling with everything
+      # else, so a bad one doesn't block the rest.
+      dev-dependencies:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - 'better-sqlite3'
+          - 'tree-sitter'
+          - 'tree-sitter-ruby'
+          - '@vscode/vsce'
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: 'bundler'
+    directory: '/ruby-lsp-addon'
+    schedule:
+      interval: 'weekly'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'

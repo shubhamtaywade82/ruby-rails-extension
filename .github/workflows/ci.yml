@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [master]
+  # No `branches:` filter — every PR gets validated regardless of its base branch.
+  # (A `pull_request: branches: [master]` filter here would silently skip CI for any
+  # PR targeting a feature/integration branch, which is exactly the kind of PR this
+  # repo has used while a larger feature branch is still unmerged.)
   pull_request:
-    branches: [master]
 
 jobs:
   validate:
@@ -24,7 +27,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9
+          version: 10
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
@@ -49,3 +52,40 @@ jobs:
 
       - name: Build VSIX Package
         run: pnpm run vsce-package
+
+      # Lets a PR reviewer download and manually install/test the exact build a PR
+      # produces, without checking it out and building it themselves. Only the
+      # Node 22.x build is uploaded — one artifact is enough for manual testing,
+      # and the matrix already proves both versions build/test identically.
+      - name: Upload VSIX artifact
+        if: matrix.node-version == '22.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: railsforge-vsix
+          path: railsforge.vsix
+          retention-days: 14
+
+  ruby-addon:
+    name: Ruby LSP Add-on Sanity Check
+    runs-on: ubuntu-latest
+    # ruby-lsp-addon/ has no test suite (it's a small, pure-Ruby ruby-lsp add-on) —
+    # this job exists so a syntax error or a broken gemspec doesn't slip through
+    # entirely unnoticed, not to substitute for real gem tests if any get added later.
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: false
+
+      - name: Ruby Syntax Check
+        working-directory: ruby-lsp-addon
+        run: find lib -name '*.rb' -print0 | xargs -0 -n1 ruby -c
+
+      - name: Build Gem
+        working-directory: ruby-lsp-addon
+        run: gem build railsforge-ruby-lsp.gemspec
