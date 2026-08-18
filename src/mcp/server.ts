@@ -27,6 +27,44 @@ import { DuplicateMethodDetector } from '../indexer/DuplicateMethodDetector'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
+const DEFAULT_EXCLUDED_DIR_NAMES = ['node_modules', 'vendor', 'tmp', 'log', '.git', 'coverage']
+
+/**
+ * This process runs outside the VS Code extension host (started by the MCP client via
+ * stdio — see the file header), so it has no access to `vscode.workspace.getConfiguration`.
+ * To still honor `railsForge.excludePatterns` set at the project level, read it straight
+ * out of the workspace's `.vscode/settings.json`. Global (user) settings.json isn't in a
+ * reliably discoverable location outside the editor, so only the project-level file is
+ * supported here; falls back to sane defaults if the file is absent or unparseable.
+ */
+function loadExcludedDirNames(): Set<string> {
+  try {
+    const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json')
+    if (!fs.existsSync(settingsPath)) {return new Set(DEFAULT_EXCLUDED_DIR_NAMES)}
+
+    const json = JSON.parse(stripJsonComments(fs.readFileSync(settingsPath, 'utf8'))) as Record<string, unknown>
+    const patterns = json['railsForge.excludePatterns']
+    if (!Array.isArray(patterns) || patterns.length === 0) {return new Set(DEFAULT_EXCLUDED_DIR_NAMES)}
+
+    const dirNames = patterns
+      .filter((p): p is string => typeof p === 'string')
+      .map(p => p.replace(/^\*\*\//, '').replace(/\/\*\*$/, '').replace(/\/\*+$/, ''))
+      .filter(Boolean)
+    return dirNames.length > 0 ? new Set(dirNames) : new Set(DEFAULT_EXCLUDED_DIR_NAMES)
+  } catch {
+    return new Set(DEFAULT_EXCLUDED_DIR_NAMES)
+  }
+}
+
+// Strips line comments and block comments from JSONC so plain JSON.parse can read a VS Code settings.json.
+function stripJsonComments(text: string): string {
+  return text.replace(/"(?:[^"\\]|\\.)*"|\/\/.*$|\/\*[\s\S]*?\*\//gm, match =>
+    match.startsWith('"') ? match : '',
+  )
+}
+
+const excludedDirNames = loadExcludedDirNames()
+
 function loadSchemaIndexer(): SchemaIndexer {
   const indexer = new SchemaIndexer()
   const schemaPath = path.join(workspaceRoot, 'db', 'schema.rb')
@@ -58,7 +96,7 @@ function loadPatternIndexer(): ProjectPatternIndexer {
 function walkRubyFiles(dir: string, onFile: (filePath: string) => void): void {
   if (!fs.existsSync(dir)) {return}
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name === 'vendor') {continue}
+    if (excludedDirNames.has(entry.name)) {continue}
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       walkRubyFiles(full, onFile)

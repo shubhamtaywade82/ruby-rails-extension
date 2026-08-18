@@ -79,10 +79,46 @@
     "configuration": {
       "title": "RailsForge",
       "properties": {
+        "railsForge.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/vendor/**",
+            "**/tmp/**",
+            "**/log/**",
+            "**/.git/**",
+            "**/coverage/**",
+            "**/public/assets/**",
+            "**/public/packs/**"
+          ],
+          "description": "Glob patterns excluded from every RailsForge workspace scan (schema/route/pattern indexing, AST index, live re-indexing on save). Set at the workspace level (.vscode/settings.json) to exclude project-specific directories (e.g. a vendored engine's dummy app, a generated docs folder) on top of, or instead of, the defaults. The RailsForge MCP server (run outside VS Code) also reads this from the workspace's .vscode/settings.json."
+        },
+        "railsForge.projectType.override": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "monolith",
+            "api_only",
+            "gem",
+            "script"
+          ],
+          "enumDescriptions": [
+            "Detect automatically from Gemfile.lock, config/application.rb, ApplicationController, and *.gemspec (default)",
+            "Force full Rails MVC treatment (views/helpers/asset pipeline features shown)",
+            "Force API-only Rails treatment (views/Hotwire features hidden; schema/routes/models kept)",
+            "Force Ruby gem treatment (Rails-specific features hidden; pattern catalog matches lib/**)",
+            "Force plain Ruby script treatment (same as gem, minus gem-publishing commands)"
+          ],
+          "default": "auto",
+          "description": "Override RailsForge's auto-detected project type. Controls which commands/keybindings appear (see the Architecture sidebar for what was detected) — set this when auto-detection gets it wrong, e.g. an API-only app without `config.api_only = true` set yet. Requires a window reload to take effect."
+        },
         "railsForge.rubocop.autocorrectOnSave": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically run safe RuboCop autocorrect on save"
+          "description": "Automatically run RuboCop autocorrect (mode per railsForge.rubocop.mode) on every Ruby file save"
         },
         "railsForge.rubocop.mode": {
           "type": "string",
@@ -91,12 +127,12 @@
             "unsafe"
           ],
           "default": "safe",
-          "description": "RuboCop autocorrect mode: safe (-a) or unsafe (-A)"
+          "description": "RuboCop autocorrect mode used by both the 'RuboCop Autocorrect File' command and rubocop.autocorrectOnSave: safe (-a) or unsafe (-A)"
         },
         "railsForge.brakeman.scanOnSave": {
           "type": "boolean",
           "default": false,
-          "description": "Run Brakeman security scan on file save"
+          "description": "Run a Brakeman security scan in the background on Ruby file save (Rails projects only). Debounced to at most once every 30s since Brakeman scans the whole project, not just the saved file; silent when clean, shows a notification with a 'Show Report' action when it finds warnings."
         },
         "railsForge.testing.framework": {
           "type": "string",
@@ -105,17 +141,17 @@
             "minitest"
           ],
           "default": "rspec",
-          "description": "Active testing framework for CodeLens test execution"
+          "description": "Fallback framework for 'Run Test'/'Debug Test' when a test file's path doesn't unambiguously indicate spec/ (RSpec) or test/ (Minitest)"
         },
         "railsForge.schema.autoIndex": {
           "type": "boolean",
           "default": true,
-          "description": "Auto-index db/schema.rb on file changes"
+          "description": "Auto-index db/schema.rb on file changes. Requires a window reload to take effect."
         },
         "railsForge.routes.autoIndex": {
           "type": "boolean",
           "default": true,
-          "description": "Auto-index config/routes.rb on file changes"
+          "description": "Auto-index config/routes.rb on file changes. Requires a window reload to take effect."
         },
         "railsForge.ollama.host": {
           "type": "string",
@@ -131,6 +167,47 @@
           "type": "string",
           "default": "nomic-embed-text",
           "description": "Ollama model used for RailsForge: Semantic Search (must be pulled separately, e.g. `ollama pull nomic-embed-text`). Search falls back to keyword matching if this model or Ollama itself is unavailable."
+        },
+        "railsForge.ai.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "openai",
+            "anthropic"
+          ],
+          "enumDescriptions": [
+            "Local, private, free — uses railsForge.ollama.host/model (default)",
+            "Cloud — requires an API key set via 'RailsForge: Set AI Provider API Key'",
+            "Cloud — requires an API key set via 'RailsForge: Set AI Provider API Key'"
+          ],
+          "default": "ollama",
+          "description": "Backend for the @rails AI agent and chat participant. Cloud providers send your code/prompts to that provider's API — only switch away from 'ollama' if you're fine with that. Requires a window reload to take effect."
+        },
+        "railsForge.ai.openai.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "OpenAI model used when railsForge.ai.provider is 'openai'"
+        },
+        "railsForge.ai.anthropic.model": {
+          "type": "string",
+          "default": "claude-sonnet-4-5",
+          "description": "Anthropic model used when railsForge.ai.provider is 'anthropic'"
+        },
+        "railsForge.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether 'RailsForge: Export Cursor Rules & Register MCP Server' also registers the RailsForge MCP server (in .cursor/mcp.json). When false, that command still writes .cursor/rules/railsforge.mdc but skips MCP server registration. The MCP server itself always runs over stdio, started on demand by the MCP client (Cursor/Claude Code) — there is no in-editor 'server process' to start/stop or a port to configure."
+        },
+        "railsForge.apiDocs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether 'RailsForge: Generate OpenAPI Skeleton' is available. Most useful for API-only projects."
+        },
+        "railsForge.performance.cacheSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings) before evicting the least-recently-used entry."
         }
       }
     },
@@ -200,6 +277,11 @@
       ]
     },
     "commands": [
+      {
+        "command": "railsforge.setAiApiKey",
+        "title": "RailsForge: Set AI Provider API Key",
+        "category": "RailsForge"
+      },
       {
         "command": "railsforge.exportCursorRules",
         "title": "RailsForge: Export Cursor Rules & Register MCP Server",
@@ -316,24 +398,72 @@
         "category": "RailsForge"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "railsforge.setAiApiKey",
+          "when": "railsforge.aiProvider != 'ollama'"
+        },
+        {
+          "command": "railsforge.goToModel",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.goToController",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.goToView",
+          "when": "railsforge.hasViews"
+        },
+        {
+          "command": "railsforge.searchRoutes",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.runBrakeman",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.analyzeMigration",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.showSchemaPeek",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.extractQuery",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.goToPolicy",
+          "when": "railsforge.hasPundit"
+        },
+        {
+          "command": "railsforge.goToComponent",
+          "when": "railsforge.hasViewComponent"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "railsforge.goToModel",
         "key": "alt+r m",
         "mac": "cmd+alt+r m",
-        "when": "editorTextFocus"
+        "when": "editorTextFocus && railsforge.isRailsApp"
       },
       {
         "command": "railsforge.goToController",
         "key": "alt+r c",
         "mac": "cmd+alt+r c",
-        "when": "editorTextFocus"
+        "when": "editorTextFocus && railsforge.isRailsApp"
       },
       {
         "command": "railsforge.goToView",
         "key": "alt+r v",
         "mac": "cmd+alt+r v",
-        "when": "editorTextFocus"
+        "when": "editorTextFocus && railsforge.hasViews"
       },
       {
         "command": "railsforge.goToSpec",
@@ -344,7 +474,8 @@
       {
         "command": "railsforge.searchRoutes",
         "key": "alt+r r",
-        "mac": "cmd+alt+r r"
+        "mac": "cmd+alt+r r",
+        "when": "railsforge.isRailsApp"
       }
     ]
   },

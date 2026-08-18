@@ -4,6 +4,7 @@
 
 import * as vscode from 'vscode'
 import { PatternRecognitionEngine, PatternOpportunity } from './PatternRecognitionEngine'
+import { readConfig, buildExcludeGlob } from '../config/RailsForgeConfig'
 
 export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
   private diagnosticCollection = vscode.languages.createDiagnosticCollection('railsforge-patterns')
@@ -22,7 +23,8 @@ export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
   }
 
   scanWorkspace(): void {
-    vscode.workspace.findFiles('{app,lib,db}/**/*.rb', '**/node_modules/**').then(uris => {
+    const excludeGlob = buildExcludeGlob(readConfig().excludePatterns) ?? undefined
+    vscode.workspace.findFiles('{app,lib,db}/**/*.rb', excludeGlob).then(uris => {
       for (const uri of uris) {
         void vscode.workspace.openTextDocument(uri).then(doc => {
           this.updateDiagnostics(doc)

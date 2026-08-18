@@ -18,9 +18,17 @@ import { PersistentIndexClient } from './PersistentIndexClient'
 import { PersistentDependencyGraph } from './PersistentDependencyGraph'
 import { DuplicateMethodDetector } from './DuplicateMethodDetector'
 import { isPersistentIndexSupported } from './nativeSupport'
+import { readConfig, buildExcludeGlob } from '../config/RailsForgeConfig'
 
 const INDEXED_GLOB = '{app,lib}/**/*.rb'
-const EXCLUDE_GLOB = '**/{node_modules,vendor,spec,test}/**'
+// Always excluded regardless of railsForge.excludePatterns: this index is specifically
+// app/lib source (see INDEXED_GLOB), so spec/test files never belong in it even if a
+// user's exclude list doesn't happen to mention them.
+const ALWAYS_EXCLUDED = ['**/spec/**', '**/test/**']
+
+function resolveExcludeGlob(): string {
+  return buildExcludeGlob([...readConfig().excludePatterns, ...ALWAYS_EXCLUDED]) ?? `{${ALWAYS_EXCLUDED.join(',')}}`
+}
 
 export class PersistentIndexManager implements vscode.Disposable {
   readonly dependencyGraph: PersistentDependencyGraph
@@ -73,7 +81,7 @@ export class PersistentIndexManager implements vscode.Disposable {
   }
 
   private async scanWorkspace(): Promise<void> {
-    const files = await vscode.workspace.findFiles(INDEXED_GLOB, EXCLUDE_GLOB)
+    const files = await vscode.workspace.findFiles(INDEXED_GLOB, resolveExcludeGlob())
     await Promise.all(files.map(async file => {
       try {
         const content = fs.readFileSync(file.fsPath, 'utf8')
