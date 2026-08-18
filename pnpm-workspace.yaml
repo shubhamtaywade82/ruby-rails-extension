@@ -8,3 +8,5 @@ allowBuilds:
   keytar: true
   tree-sitter: true
   tree-sitter-ruby: true
+
+verifyDepsBeforeRun: false
