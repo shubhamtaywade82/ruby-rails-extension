@@ -6,6 +6,7 @@ import * as vscode from 'vscode'
 import { RailsAgent } from '../agent/RailsAgent'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
+import { Logger } from '../util/Logger'
 
 export class RailsChatParticipant {
   private static instance: RailsChatParticipant | undefined
@@ -22,6 +23,7 @@ export class RailsChatParticipant {
     routesIndexer: RoutesIndexer,
   ): void {
     if (typeof vscode.chat?.createChatParticipant !== 'function') {
+      Logger.debug('vscode.chat.createChatParticipant is unavailable in this host environment.')
       return
     }
 
@@ -29,12 +31,14 @@ export class RailsChatParticipant {
       this.participant = vscode.chat.createChatParticipant(
         'railsforge.agent',
         async (request, _chatContext, stream) => {
+          Logger.info(`[@rails] Chat prompt received: "${request.prompt}" (command: /${request.command ?? 'default'})`)
           await this.handleRequest(request, stream, agent, schemaIndexer, routesIndexer)
         },
       )
       context.subscriptions.push(this.participant)
+      Logger.info('Registered @rails chat participant.')
     } catch (err) {
-      console.warn('Failed to register @rails chat participant:', err)
+      Logger.warn('Failed to register @rails chat participant:', err)
     }
   }
 
@@ -68,6 +72,12 @@ export class RailsChatParticipant {
       fileName: editor?.document.fileName,
       workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     })
+
+    if (result.success) {
+      Logger.info('[@rails] Response generated successfully.')
+    } else {
+      Logger.warn(`[@rails] Response generation failed: ${result.response}`)
+    }
 
     stream.markdown(result.response)
   }

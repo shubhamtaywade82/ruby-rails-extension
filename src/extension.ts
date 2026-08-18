@@ -62,8 +62,10 @@ import { RubyGemsClient } from './gems/RubyGemsClient'
 import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
 import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
+import { Logger } from './util/Logger'
 
 export function activate(context: vscode.ExtensionContext): void {
+  Logger.init(context)
   const config = readConfig()
   const schemaIndexer = new SchemaIndexer()
   const routesIndexer = new RoutesIndexer()
@@ -122,6 +124,8 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'railsforge.hasViewComponent', env.hasViewComponent)
   void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', config.aiProvider)
   void vscode.commands.executeCommand('setContext', 'railsforge.apiDocsEnabled', config.apiDocsEnabled)
+
+  Logger.info(`RailsForge activated. Project type: ${env.projectType}, Ruby: ${env.rubyVersion}, Rails: ${env.hasRails ? env.railsVersion : 'none'}`)
 
   const ollamaHost = config.ollamaHost
   const agent = new RailsAgent(
@@ -853,6 +857,9 @@ function registerCommands(
       term.show()
       term.sendText('bundle exec rake release')
     }),
+    vscode.commands.registerCommand('railsforge.showLogs', () => {
+      Logger.show()
+    }),
     vscode.commands.registerCommand('railsforge.exportCursorRules', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
       if (!root) {
@@ -896,6 +903,7 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
       const document = await vscode.workspace.openTextDocument(uri)
       const code = document.getText(range)
+      Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${range.start.line + 1}`)
 
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
@@ -908,10 +916,12 @@ function registerCommands(
           })
 
           if (!fixed) {
+            Logger.warn(`[AI Fix] Fix unavailable for: "${diagnosticMessage}"`)
             vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running).')
             return
           }
 
+          Logger.info(`[AI Fix] Applying fix to ${vscode.workspace.asRelativePath(uri)}:${range.start.line + 1}`)
           const edit = new vscode.WorkspaceEdit()
           edit.replace(uri, range, fixed)
           await vscode.workspace.applyEdit(edit)

@@ -7,6 +7,7 @@ import * as vscode from 'vscode'
 import { RailsAgent } from '../agent/RailsAgent'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
+import { Logger } from '../util/Logger'
 
 interface WebviewMessage {
   type: string
@@ -99,12 +100,20 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
 
     void this.view?.webview.postMessage({ type: 'startStreaming' })
 
+    Logger.info(`[Sidebar Chat] Processing prompt: "${prompt}"`)
+
     const result = await this.agent.run(prompt, {
       fileContent: activeCode,
       fileName,
       selection,
       workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     })
+
+    if (result.success) {
+      Logger.info('[Sidebar Chat] Response received successfully.')
+    } else {
+      Logger.warn(`[Sidebar Chat] Response error: ${result.response}`)
+    }
 
     void this.view?.webview.postMessage({
       type: 'appendMessage',

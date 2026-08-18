@@ -19,6 +19,7 @@ import { PersistentDependencyGraph } from './PersistentDependencyGraph'
 import { DuplicateMethodDetector } from './DuplicateMethodDetector'
 import { isPersistentIndexSupported } from './nativeSupport'
 import { readConfig, buildExcludeGlob } from '../config/RailsForgeConfig'
+import { Logger } from '../util/Logger'
 
 const INDEXED_GLOB = '{app,lib}/**/*.rb'
 // Always excluded regardless of railsForge.excludePatterns: this index is specifically
@@ -50,7 +51,7 @@ export class PersistentIndexManager implements vscode.Disposable {
     // loading that native module aborts the whole process, which no try/catch below
     // can protect against.
     if (!isPersistentIndexSupported()) {
-      console.warn(`RailsForge: persistent AST index needs a Node runtime with N-API >= 10 (this one reports ${process.versions.napi ?? 'none'}) — Phase 8/11/13/14 features disabled.`)
+      Logger.warn(`RailsForge: persistent AST index needs a Node runtime with N-API >= 10 (this one reports ${process.versions.napi ?? 'none'}) — Phase 8/11/13/14 features disabled.`)
       return null
     }
 
@@ -75,7 +76,7 @@ export class PersistentIndexManager implements vscode.Disposable {
       return manager
     } catch (err) {
       // Native module unavailable, worker failed to start, etc. — degrade, don't break activation.
-      console.error('RailsForge: persistent AST index unavailable, Phase 8/11/13/14 features disabled.', err)
+      Logger.error('RailsForge: persistent AST index unavailable, Phase 8/11/13/14 features disabled.', err)
       return null
     }
   }

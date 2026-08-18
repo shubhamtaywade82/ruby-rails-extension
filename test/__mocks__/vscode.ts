@@ -97,6 +97,16 @@ export const window = {
   createStatusBarItem: () => ({
     show: () => {},
   }),
+  createOutputChannel: () => ({
+    name: 'RailsForge',
+    appendLine: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+    show: () => {},
+    dispose: () => {},
+  }),
 }
 
 export const commands = {

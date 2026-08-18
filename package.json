@@ -300,6 +300,11 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.showLogs",
+        "title": "RailsForge: Show Output Logs",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.exportCursorRules",
         "title": "RailsForge: Export Cursor Rules & Register MCP Server",
         "category": "RailsForge"
