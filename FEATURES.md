@@ -31,6 +31,7 @@
    - [F-18 Version-Aware Documentation Engine](#f-18-version-aware-documentation-engine)
    - [F-19 Standalone Ruby & Gem Support](#f-19-standalone-ruby--gem-support)
    - [F-20 Editing Aids: Endwise, ERB Tags & Gem Lens](#f-20-editing-aids-endwise-erb-tags--gem-lens)
+   - [F-21 Project-Type-Aware Tooling & Full Settings Configurability](#f-21-project-type-aware-tooling--full-settings-configurability)
 5. [Keybindings Reference](#5-keybindings-reference)
 6. [Command Palette Reference](#6-command-palette-reference)
 7. [Configuration Reference](#7-configuration-reference)
@@ -112,6 +113,7 @@ RailsForge activates on any of:
 | F-18 | Version-Aware Docs Engine | `docs/VersionDocsEngine` |
 | F-19 | Standalone Ruby & Gem Support | `environment/EnvironmentDetector` |
 | F-20 | Editing Aids: Endwise, ERB Tags & Gem Lens | `editing/EndwiseProvider`, `editing/ErbTagCompletionProvider`, `gems/GemLensProvider`, `gems/RubyGemsClient` |
+| F-21 | Project-Type-Aware Tooling & Full Settings Configurability | `config/RailsForgeConfig`, `docs/OpenApiSkeletonGenerator`, `gems/GemVersionBumper`, `util/LruCache` |
 
 ---
 
@@ -645,7 +647,39 @@ Three small, zero-configuration authoring aids that replace standalone marketpla
 
 **Gem Lens:**
 - Hovering a gem name in `Gemfile` (e.g. `gem "rails"`) fetches its latest published version, summary, and documentation/homepage links from the [RubyGems.org API](https://guides.rubygems.org/rubygems-org-api/)
-- Results are cached in-memory per gem name for the life of the session; network failures degrade to no hover rather than an error
+- Results are cached (bounded by `railsForge.performance.cacheSize`) per gem name for the life of the session; network failures degrade to no hover rather than an error
+
+---
+
+### F-21 Project-Type-Aware Tooling & Full Settings Configurability
+
+**Source:** [`config/RailsForgeConfig.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/config/RailsForgeConfig.ts), [`docs/OpenApiSkeletonGenerator.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/docs/OpenApiSkeletonGenerator.ts), [`gems/GemVersionBumper.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/gems/GemVersionBumper.ts), [`util/LruCache.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/util/LruCache.ts)
+
+Every `railsForge.*` setting is a real, wired-up control (not a declared-but-unused stub) — see §7 for the complete reference. This feature groups everything that makes RailsForge adapt to *which kind* of Ruby/Rails project it's in, beyond what F-19 already covers.
+
+**Project type detection & override:**
+- `railsForge.projectType.override` forces `monolith`/`api_only`/`gem`/`script` over auto-detection (see F-19 for how auto-detection itself works)
+- The Command Palette and keybindings (`Alt+R M/C/V/R`) only show commands relevant to the detected/overridden type — a `gem` project never sees "Go to View", an `api_only` app never sees it either (no `app/views`), and `goToPolicy`/`goToComponent` stay hidden unless Pundit/ViewComponent are actually in `Gemfile.lock`
+
+**Workspace-wide exclude patterns:**
+- `railsForge.excludePatterns` is honored by every scan RailsForge runs: schema/routes/pattern/spec indexing, Turbo Frame indexing, the AST index (on top of its own always-on spec/test exclusion), and live re-indexing on save
+- Set at the workspace level to exclude a vendored engine's dummy app (`spec/dummy`), a generated docs folder, or anything else specific to that project, on top of (or instead of) the sane defaults
+- The standalone MCP server process (outside the extension host) reads the same setting from the workspace's `.vscode/settings.json`
+
+**API doc generation (`railsforge.generateApiDocs`):**
+- Builds a minimal OpenAPI 3.0 YAML skeleton from the indexed route table — paths (with `:id` converted to `{id}`), HTTP methods, `operationId`, and a `TODO` response placeholder per route
+- Gated by `railsForge.apiDocs.enabled`; most useful for `api_only` projects where every route is a real API endpoint
+
+**Gem publishing helpers (`gem` project type only):**
+- `railsforge.bumpGemVersion`: finds `lib/**/version.rb`, offers a major/minor/patch QuickPick against the current `VERSION`, rewrites it in place
+- `railsforge.releaseGem`: runs `bundle exec rake release` — behind a modal confirmation, since it pushes a git tag and publishes to RubyGems.org
+
+**Cloud AI providers:**
+- `railsForge.ai.provider` switches the `@rails` agent between `ollama` (default, local/private), `openai`, and `anthropic`
+- API keys never touch `settings.json` — `railsforge.setAiApiKey` stores them in VS Code's `SecretStorage`, scoped per provider
+
+**Bounded caches:**
+- `railsForge.performance.cacheSize` caps Gem Lens's gem-info cache and Semantic Search's embedding cache with LRU eviction, instead of growing unbounded for the life of the session
 
 ---
 
@@ -691,24 +725,44 @@ All keybindings require `editorTextFocus` (except Route Search which is global).
 | Show Circular Dependencies | `railsforge.showDependencyCycles` |
 | Fix All Deterministic Principle Violations in File | `railsforge.fixAllInFile` |
 | Export Cursor Rules & Register MCP Server | `railsforge.exportCursorRules` |
+| Set AI Provider API Key | `railsforge.setAiApiKey` |
+| Generate OpenAPI Skeleton | `railsforge.generateApiDocs` |
+| Bump Gem Version | `railsforge.bumpGemVersion` |
+| Release Gem (`bundle exec rake release`) | `railsforge.releaseGem` |
+
+Several commands only appear in the Command Palette for the relevant project type or configuration (see the settings table below and `package.json`'s `menus.commandPalette`) — e.g. `goToModel`/`goToController`/`searchRoutes`/`runBrakeman`/`analyzeMigration`/`showSchemaPeek`/`extractQuery` only show for Rails apps (`monolith`/`api_only`), `goToView` only for `monolith`, `generateApiDocs` only when `apiDocs.enabled` is true, `bumpGemVersion`/`releaseGem` only for `gem`, `setAiApiKey` only when `ai.provider` isn't `"ollama"`, and `goToPolicy`/`goToComponent` only when Pundit/ViewComponent are detected in `Gemfile.lock`. Every command still runs fine if invoked another way (e.g. a keybinding) regardless of this filtering — it only affects Command Palette clutter.
 
 ---
 
 ## 7. Configuration Reference
 
-All settings live under the `railsForge.*` namespace in `settings.json`:
+All settings live under the `railsForge.*` namespace and can be set at either the **user level** (global `settings.json`, applies to every workspace) or the **workspace level** (`.vscode/settings.json`, applies to just that project — VS Code's normal precedence rules apply, workspace wins). None of RailsForge's settings use a restricted scope, so every one of them is configurable at both levels with no special setup.
 
-| Setting | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `railsForge.rubocop.autocorrectOnSave` | `boolean` | `false` | Run safe RuboCop autocorrect on every save |
-| `railsForge.rubocop.mode` | `"safe"` \| `"unsafe"` | `"safe"` | RuboCop autocorrect mode: `-a` (safe) or `-A` (unsafe) |
-| `railsForge.brakeman.scanOnSave` | `boolean` | `false` | Run Brakeman scan on every file save |
-| `railsForge.testing.framework` | `"rspec"` \| `"minitest"` | `"rspec"` | Active testing framework for CodeLens |
-| `railsForge.schema.autoIndex` | `boolean` | `true` | Auto-rebuild schema index when `db/schema.rb` changes |
-| `railsForge.routes.autoIndex` | `boolean` | `true` | Auto-rebuild route index when `config/routes.rb` changes |
-| `railsForge.ollama.host` | `string` | `"http://localhost:11434"` | URL of the local Ollama instance |
-| `railsForge.ollama.model` | `string` | `"qwen2.5-coder:14b"` | Default chat model for `@rails` AI agent |
-| `railsForge.ollama.embeddingModel` | `string` | `"nomic-embed-text"` | Embedding model for Semantic Search (pull separately) |
+Settings marked **"requires reload"** are read once at activation (or when a provider/watcher is constructed) rather than watched live; change them, then run **Developer: Reload Window**. Everything else takes effect on the very next action (next save, next scan, next command run) with no reload needed.
+
+| Setting | Type | Default | Reload? | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `railsForge.excludePatterns` | `string[]` | see below | Live for scans; existing watchers need reload | Glob patterns excluded from every workspace scan — schema/route/pattern indexing, the AST index, live re-indexing on save, and (read from `.vscode/settings.json`) the standalone MCP server. Default: `node_modules`, `vendor`, `tmp`, `log`, `.git`, `coverage`, `public/assets`, `public/packs` |
+| `railsForge.projectType.override` | `"auto"` \| `"monolith"` \| `"api_only"` \| `"gem"` \| `"script"` | `"auto"` | **Requires reload** | Forces a project type over auto-detection. Controls which commands/keybindings the Command Palette shows (see §8's `menus.commandPalette`) |
+| `railsForge.rubocop.autocorrectOnSave` | `boolean` | `false` | Live | Run RuboCop autocorrect (mode per `rubocop.mode`) on every Ruby file save |
+| `railsForge.rubocop.mode` | `"safe"` \| `"unsafe"` | `"safe"` | Live | RuboCop autocorrect mode: `-a` (safe) or `-A` (unsafe) — used by both the manual command and `autocorrectOnSave` |
+| `railsForge.brakeman.scanOnSave` | `boolean` | `false` | Live | Run a Brakeman scan in the background on save (Rails only), debounced to at most once per 30s, silent when clean |
+| `railsForge.testing.framework` | `"rspec"` \| `"minitest"` | `"rspec"` | Live | Tie-breaker for Run/Debug Test when a test file's path doesn't say `spec/` or `test/` |
+| `railsForge.schema.autoIndex` | `boolean` | `true` | **Requires reload** | Auto-rebuild schema index when `db/schema.rb` changes |
+| `railsForge.routes.autoIndex` | `boolean` | `true` | **Requires reload** | Auto-rebuild route index when `config/routes.rb` changes |
+| `railsForge.ollama.host` | `string` | `"http://localhost:11434"` | **Requires reload** | URL of the local Ollama instance |
+| `railsForge.ollama.model` | `string` | `"qwen2.5-coder:14b"` | **Requires reload** | Default chat model for `@rails` AI agent when `ai.provider` is `"ollama"` |
+| `railsForge.ollama.embeddingModel` | `string` | `"nomic-embed-text"` | Live | Embedding model for Semantic Search (pull separately) |
+| `railsForge.ai.provider` | `"ollama"` \| `"openai"` \| `"anthropic"` | `"ollama"` | **Requires reload** | Backend for the `@rails` agent. Cloud providers send prompts/code to that provider's API |
+| `railsForge.ai.openai.model` | `string` | `"gpt-4o-mini"` | **Requires reload** | Model used when `ai.provider` is `"openai"` |
+| `railsForge.ai.anthropic.model` | `string` | `"claude-sonnet-4-5"` | **Requires reload** | Model used when `ai.provider` is `"anthropic"` |
+| `railsForge.mcp.enabled` | `boolean` | `true` | Live | Whether "Export Cursor Rules" also registers the MCP server in `.cursor/mcp.json` (the `.mdc` rules file is always written) |
+| `railsForge.apiDocs.enabled` | `boolean` | `true` | Live (Command Palette visibility needs reload) | Whether "Generate OpenAPI Skeleton" is available |
+| `railsForge.performance.cacheSize` | `number` | `200` | **Requires reload** | Max entries in RailsForge's bounded caches (Gem Lens lookups, semantic-search embeddings) before LRU eviction |
+
+**Cloud AI API keys** are never stored in `settings.json` — run **RailsForge: Set AI Provider API Key** (after setting `railsForge.ai.provider` to `"openai"` or `"anthropic"`) and the key is stored in VS Code's encrypted `SecretStorage`, scoped per provider.
+
+**API key security note:** switching `railsForge.ai.provider` to a cloud provider means your prompts — which include file content, schema, and routes for grounding — are sent to that provider's API. Stick with `"ollama"` (the default) to keep everything local.
 
 ---
 
@@ -784,7 +838,14 @@ Extension Host (extension.ts)
 │   ├── EndwiseProvider         ← auto-`end` on Enter
 │   ├── ErbTagCompletionProvider ← `<%` tag expansion
 │   ├── GemLensProvider         ← Gemfile hover
-│   └── RubyGemsClient          ← rubygems.org API, in-memory cache
+│   └── RubyGemsClient          ← rubygems.org API, LRU cache
+│
+├── Config & Project-Type Tooling
+│   ├── RailsForgeConfig        ← single read point for every railsForge.* setting
+│   ├── EnvironmentDetector     ← + projectType detection/override
+│   ├── OpenApiSkeletonGenerator ← Generate OpenAPI Skeleton
+│   ├── GemVersionBumper        ← Bump Gem Version
+│   └── LruCache                ← generic bounded cache (Gem Lens, Semantic Search)
 │
 └── Views (Activity Bar)
     ├── RailsArchitectureTreeProvider
@@ -835,5 +896,7 @@ RailsForge is a **companion** to Shopify's `ruby-lsp` — not a replacement.
 | 14 | MCP server + Cursor Rules export | ✅ Done |
 | 15 | Stimulus ↔ TypeScript `Cmd+Click` cross-linking, Turbo Frame & partial `Ctrl+Click` navigation | ✅ Done |
 | 16 | Endwise auto-`end`, ERB tag-expansion, Gem Lens hover | ✅ Done |
+| 17 | Project-type detection (monolith/api_only/gem/script) | ✅ Done |
+| 18 | Full settings.json configurability: excludePatterns, project-type override + Command Palette gating, cloud AI providers, MCP toggle, API doc generator, gem publishing, bounded LRU caches | ✅ Done |
 
 **Package:** `railsforge.vsix` (~11 MB) — verified end-to-end with `vsce package --no-dependencies`.

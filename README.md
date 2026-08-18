@@ -197,23 +197,48 @@ Powered by local Ollama (`qwen2.5-coder:14b` / `7b`):
 | **RailsForge: Check Migration Safety (Strong Migrations)** | `railsforge.analyzeMigration` |
 | **RailsForge: Extract Selection to Service Object** | `railsforge.extractService` |
 | **RailsForge: Extract Selection to Query Object** | `railsforge.extractQuery` |
+| **RailsForge: Set AI Provider API Key** | `railsforge.setAiApiKey` |
+| **RailsForge: Generate OpenAPI Skeleton** | `railsforge.generateApiDocs` |
+| **RailsForge: Bump Gem Version** | `railsforge.bumpGemVersion` |
+| **RailsForge: Release Gem** | `railsforge.releaseGem` |
+
+Several of these only show in the palette for the relevant project type — see [FEATURES.md §6](FEATURES.md#6-command-palette-reference).
 
 ---
 
 ## Configuration Settings
 
-Configure RailsForge in `settings.json`:
+Every setting lives under `railsForge.*` and works at either the **user level** (global `settings.json`) or the **workspace level** (`.vscode/settings.json`, wins over user settings) — there's nothing extension-specific to set up for that, it's how VS Code settings scoping already works. Full reference with defaults, live-vs-reload behavior, and descriptions: [FEATURES.md §7](FEATURES.md#7-configuration-reference).
 
 ```json
 {
+  // Exclude project-specific directories from every RailsForge scan, on top of
+  // the built-in node_modules/vendor/tmp/log/.git/coverage defaults
+  "railsForge.excludePatterns": ["**/spec/dummy/**"],
+
+  // Force a project type instead of auto-detecting (monolith/api_only/gem/script)
+  "railsForge.projectType.override": "auto",
+
   "railsForge.rubocop.autocorrectOnSave": true,
   "railsForge.rubocop.mode": "safe",
   "railsForge.brakeman.scanOnSave": false,
   "railsForge.testing.framework": "rspec",
   "railsForge.schema.autoIndex": true,
   "railsForge.routes.autoIndex": true,
+
   "railsForge.ollama.host": "http://localhost:11434",
-  "railsForge.ollama.model": "qwen2.5-coder:14b"
+  "railsForge.ollama.model": "qwen2.5-coder:14b",
+  "railsForge.ollama.embeddingModel": "nomic-embed-text",
+
+  // Cloud AI providers — API keys are set via the "RailsForge: Set AI Provider
+  // API Key" command (stored in SecretStorage), never here
+  "railsForge.ai.provider": "ollama",
+  "railsForge.ai.openai.model": "gpt-4o-mini",
+  "railsForge.ai.anthropic.model": "claude-sonnet-4-5",
+
+  "railsForge.mcp.enabled": true,
+  "railsForge.apiDocs.enabled": true,
+  "railsForge.performance.cacheSize": 200
 }
 ```
 
