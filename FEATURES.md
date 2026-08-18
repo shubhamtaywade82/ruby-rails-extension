@@ -30,6 +30,7 @@
    - [F-17 Architecture & Health Sidebar](#f-17-architecture--health-sidebar)
    - [F-18 Version-Aware Documentation Engine](#f-18-version-aware-documentation-engine)
    - [F-19 Standalone Ruby & Gem Support](#f-19-standalone-ruby--gem-support)
+   - [F-20 Editing Aids: Endwise, ERB Tags & Gem Lens](#f-20-editing-aids-endwise-erb-tags--gem-lens)
 5. [Keybindings Reference](#5-keybindings-reference)
 6. [Command Palette Reference](#6-command-palette-reference)
 7. [Configuration Reference](#7-configuration-reference)
@@ -110,6 +111,7 @@ RailsForge activates on any of:
 | F-17 | Architecture & Health Sidebar | `views/RailsArchitectureTreeProvider`, `views/PatternCatalogTreeProvider` |
 | F-18 | Version-Aware Docs Engine | `docs/VersionDocsEngine` |
 | F-19 | Standalone Ruby & Gem Support | `environment/EnvironmentDetector` |
+| F-20 | Editing Aids: Endwise, ERB Tags & Gem Lens | `editing/EndwiseProvider`, `editing/ErbTagCompletionProvider`, `gems/GemLensProvider`, `gems/RubyGemsClient` |
 
 ---
 
@@ -619,6 +621,25 @@ Pattern catalog matches `services/`, `queries/`, `forms/`, `policies/`, `decorat
 
 ---
 
+### F-20 Editing Aids: Endwise, ERB Tags & Gem Lens
+
+**Source:** [`editing/EndwiseProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/editing/EndwiseProvider.ts), [`editing/ErbTagCompletionProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/editing/ErbTagCompletionProvider.ts), [`gems/GemLensProvider.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/gems/GemLensProvider.ts), [`gems/RubyGemsClient.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/gems/RubyGemsClient.ts), [`gems/GemNameParser.ts`](file:///home/nemesis/project/ai-workspace/ruby-rails-extension/src/gems/GemNameParser.ts)
+
+Three small, zero-configuration authoring aids that replace standalone marketplace extensions.
+
+**Endwise (auto-`end`):**
+- Pressing Enter after a line that opens a Ruby block — `def`, `class`, `module`, `case`, `begin`, `for`, leading `if`/`unless`/`while`/`until`, a trailing `do`, or an assigned `x = if …` expression — inserts a matching `end` on the next line, indented to match the opener
+- Deliberately does **not** fire for statement modifiers (`return foo if bar`), block-continuation keywords (`else`, `elsif`, `when`, `rescue`, `ensure`), brace blocks (`{ |x| … }`), or lines already closed on the same line (`def foo; end`)
+
+**Simple Ruby ERB (tag expansion):**
+- Typing `<%` in an `.erb` file offers three snippet completions: `<%= %>` (output), `<% %>` (execution), and `<%# %>` (comment), cursor placed between the tags
+
+**Gem Lens:**
+- Hovering a gem name in `Gemfile` (e.g. `gem "rails"`) fetches its latest published version, summary, and documentation/homepage links from the [RubyGems.org API](https://guides.rubygems.org/rubygems-org-api/)
+- Results are cached in-memory per gem name for the life of the session; network failures degrade to no hover rather than an error
+
+---
+
 ## 5. Keybindings Reference
 
 | Action | Linux / Windows | macOS | Command ID |
@@ -750,6 +771,12 @@ Extension Host (extension.ts)
 ├── MCP Server (dist/mcp/server.js — separate process)
 │   └── Exposes 6 tools via stdio MCP protocol
 │
+├── Editing Aids
+│   ├── EndwiseProvider         ← auto-`end` on Enter
+│   ├── ErbTagCompletionProvider ← `<%` tag expansion
+│   ├── GemLensProvider         ← Gemfile hover
+│   └── RubyGemsClient          ← rubygems.org API, in-memory cache
+│
 └── Views (Activity Bar)
     ├── RailsArchitectureTreeProvider
     └── PatternCatalogTreeProvider
@@ -798,5 +825,6 @@ RailsForge is a **companion** to Shopify's `ruby-lsp` — not a replacement.
 | 13 | DuplicateCallSiteFinder + SpecFileGenerator | ✅ Done |
 | 14 | MCP server + Cursor Rules export | ✅ Done |
 | 15 | Stimulus ↔ TypeScript `Cmd+Click` cross-linking, Turbo Frame & partial `Ctrl+Click` navigation | ✅ Done |
+| 16 | Endwise auto-`end`, ERB tag-expansion, Gem Lens hover | ✅ Done |
 
 **Package:** `railsforge.vsix` (~11 MB) — verified end-to-end with `vsce package --no-dependencies`.

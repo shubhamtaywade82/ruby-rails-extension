@@ -55,6 +55,10 @@ import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerato
 import { buildCursorRulesContent } from './mcp/CursorRulesGenerator'
 import { EmbeddingClient } from './search/EmbeddingClient'
 import { SemanticSearchIndex } from './search/SemanticSearchIndex'
+import { EndwiseProvider } from './editing/EndwiseProvider'
+import { ErbTagCompletionProvider } from './editing/ErbTagCompletionProvider'
+import { GemLensProvider } from './gems/GemLensProvider'
+import { RubyGemsClient } from './gems/RubyGemsClient'
 
 export function activate(context: vscode.ExtensionContext): void {
   const schemaIndexer = new SchemaIndexer()
@@ -82,6 +86,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const stimulusIndexer = new StimulusIndexer()
   const turboFrameNavigator = new TurboFrameNavigator()
   const viewPartialResolver = new ViewPartialResolver()
+  const rubyGemsClient = new RubyGemsClient()
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -175,6 +180,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
+    vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new GemLensProvider(rubyGemsClient)),
     vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, factoryBotResolver),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html'], new StimulusDefinitionProvider(stimulusIndexer)),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html', 'ruby'], new TurboFrameDefinitionProvider(turboFrameNavigator)),
@@ -196,6 +202,8 @@ export function activate(context: vscode.ExtensionContext): void {
       '\'',
       '=',
     ),
+    vscode.languages.registerCompletionItemProvider('erb', new ErbTagCompletionProvider(), '%'),
+    vscode.languages.registerOnTypeFormattingEditProvider({ language: 'ruby', scheme: 'file' }, new EndwiseProvider(), '\n'),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, relatedCodeLensProvider),
