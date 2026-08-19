@@ -33,6 +33,8 @@ import { DevDocsOfflineIndex } from '../docs/DevDocsOfflineIndex'
 import { RBSIndex } from '../types/RBSIndex'
 import { RakeTaskIndexer } from '../rake/RakeTaskIndexer'
 import { getLearningResource } from '../principles/LearningResources'
+import { loadProjectGuidelines } from '../config/ProjectGuidelines'
+import { getEffectiveServiceObjectGuidelines } from '../config/EffectiveGuidelines'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -439,6 +441,60 @@ server.registerTool(
       return { content: [{ type: 'text', text: `No learning resource mapped for "${diagnostic_id}".` }] }
     }
     return { content: [{ type: 'text', text: JSON.stringify(resource, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'get_project_guidelines',
+  {
+    title: 'Get project architecture guidelines',
+    description: 'Returns this project\'s actual conventions — from .railsforge.yml if the team wrote one, otherwise learned from the codebase\'s own existing Service Objects (majority base class + entry-point method name, only when the codebase actually agrees on one) — so an AI agent generates a Service Object matching this repo\'s real pattern (e.g. `Interactor`/`run`) instead of assuming the generic Rails-generator default (`ApplicationService`/`call`). Call this before generating a new Service Object.',
+    inputSchema: {},
+  },
+  async () => {
+    const explicit = loadProjectGuidelines(workspaceRoot)
+    const indexer = loadPatternIndexer()
+    const serviceObjects = getEffectiveServiceObjectGuidelines(explicit, indexer)
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          serviceObjects,
+          preferredLibraries: explicit?.preferredLibraries ?? null,
+          testing: explicit?.testing ?? null,
+          configFile: explicit ? '.railsforge.yml' : null,
+        }, null, 2),
+      }],
+    }
+  },
+)
+
+server.registerTool(
+  'get_example_file',
+  {
+    title: 'Get a representative example file for a pattern type',
+    description: 'Returns the full content of this project\'s most complete existing Service/Query/Form/Policy/Decorator/Concern, so an AI agent can learn the repo\'s real style (naming, error handling, how it structures the class) by example instead of guessing. Call this alongside get_project_guidelines before generating a new file of the same pattern type.',
+    inputSchema: {
+      pattern_type: z.enum(['service', 'query', 'form', 'policy', 'decorator', 'concern']),
+    },
+  },
+  async ({ pattern_type }) => {
+    const indexer = loadPatternIndexer()
+    const candidates = indexer.getPatternsByType(pattern_type as PatternType)
+    if (candidates.length === 0) {
+      return { content: [{ type: 'text', text: `No existing ${pattern_type} found in this project to use as an example.` }] }
+    }
+
+    // "Most complete" as a proxy for "most representative": the one with the most public
+    // methods is less likely to be a trivial/stub example.
+    const best = candidates.reduce((a, b) => (b.publicMethods.length > a.publicMethods.length ? b : a))
+    try {
+      const content = fs.readFileSync(best.filePath, 'utf8')
+      return { content: [{ type: 'text', text: JSON.stringify({ filePath: best.filePath, name: best.name, content }, null, 2) }] }
+    } catch {
+      return { content: [{ type: 'text', text: `Found ${best.name} at ${best.filePath} but could not read the file.` }] }
+    }
   },
 )
 

@@ -4,12 +4,21 @@
 
 import * as path from 'path'
 import * as fs from 'fs'
+import { findCustomTemplate, renderTemplate } from '../generators/TemplateEngine'
 
 export interface ExtractedServiceResult {
   serviceFilePath: string
   serviceCode: string
   replacementCall: string
 }
+
+export interface ServiceObjectGuidelines {
+  dir: string
+  baseClass: string
+  methodName: string
+}
+
+const DEFAULT_GUIDELINES: ServiceObjectGuidelines = { dir: 'app/services', baseClass: 'ApplicationService', methodName: 'call' }
 
 const RUBY_KEYWORDS = new Set([
   'def', 'end', 'if', 'elsif', 'else', 'unless', 'case', 'when', 'while', 'until',
@@ -56,34 +65,48 @@ export class ServiceExtractor {
     selectedCode: string,
     params: string[],
     workspaceRoot: string,
+    guidelines: ServiceObjectGuidelines = DEFAULT_GUIDELINES,
   ): ExtractedServiceResult {
     const className = this.camelize(serviceName)
     const fileName = `${this.underscore(serviceName)}_service.rb`
-    const serviceDir = path.join(workspaceRoot, 'app', 'services')
+    const serviceDir = path.join(workspaceRoot, ...guidelines.dir.split('/'))
     const serviceFilePath = path.join(serviceDir, fileName)
 
     const paramList = params.join(', ')
     const initParams = params.map(p => `@${p} = ${p}`).join('\n    ')
     const attrReaders = params.length > 0 ? `\n  attr_reader :${params.join(', :')}\n` : ''
+    const fullClassName = `${className}Service`
+    const entryMethod = guidelines.methodName
 
-    const serviceCode = `# frozen_string_literal: true
+    const customTemplate = findCustomTemplate(workspaceRoot, 'service')
+    const serviceCode = customTemplate
+      ? renderTemplate(customTemplate, {
+        class_name: fullClassName,
+        base_class: guidelines.baseClass,
+        method_name: entryMethod,
+        params_list: paramList,
+        init_params: initParams,
+        attr_readers: attrReaders,
+        selected_code: selectedCode.trim().split('\n').join('\n    '),
+      })
+      : `# frozen_string_literal: true
 
-class ${className}Service < ApplicationService
-  def self.call(${paramList})
-    new(${paramList}).call
+class ${fullClassName} < ${guidelines.baseClass}
+  def self.${entryMethod}(${paramList})
+    new(${paramList}).${entryMethod}
   end
 
   def initialize(${paramList})
     ${initParams}
   end
 ${attrReaders}
-  def call
+  def ${entryMethod}
     ${selectedCode.trim().split('\n').join('\n    ')}
   end
 end
 `
 
-    const replacementCall = `${className}Service.call(${paramList})`
+    const replacementCall = `${fullClassName}.${entryMethod}(${paramList})`
 
     return {
       serviceFilePath,

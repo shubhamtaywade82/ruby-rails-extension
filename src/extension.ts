@@ -81,6 +81,7 @@ import { RBSHoverProvider } from './types/RBSHoverProvider'
 import { RBSDefinitionProvider } from './types/RBSDefinitionProvider'
 import { SteepProvider } from './types/SteepProvider'
 import { LearningResource } from './principles/LearningResources'
+import { loadEffectiveServiceObjectGuidelines } from './config/EffectiveGuidelines'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 import { Logger } from './util/Logger'
 
@@ -138,6 +139,7 @@ export function activate(context: vscode.ExtensionContext): void {
     queryExtractor,
     formExtractor,
     valueExtractor,
+    projectPatternIndexer,
   )
   const envDetector = new EnvironmentDetector()
 
@@ -1326,7 +1328,8 @@ function registerCommands(
       if (!name) {return}
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
       const freeVars = serviceExtractor.detectFreeVariables(selection)
-      const res = serviceExtractor.extractService(name, selection, freeVars, root)
+      const guidelines = loadEffectiveServiceObjectGuidelines(root, projectPatternIndexer)
+      const res = serviceExtractor.extractService(name, selection, freeVars, root, guidelines)
 
       // Single WorkspaceEdit so VS Code shows one multi-file diff preview: only the
       // selected range in the original file changes, plus the new service file — nothing
