@@ -2,10 +2,10 @@
  * BundlerAuditScanner - Scans Gemfile.lock for vulnerable gem dependencies (CVEs)
  */
 
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export interface GemVulnerability {
   gemName: string
@@ -23,9 +23,26 @@ export interface BundlerAuditReport {
 
 export class BundlerAuditScanner {
   async runAudit(workspaceRoot: string): Promise<BundlerAuditReport> {
-    const cmd = 'bundle-audit check --format json || bundle exec bundle-audit check --format json'
+    const viaBundle = await this.tryAudit('bundle', ['exec', 'bundle-audit', 'check', '--format', 'json'], workspaceRoot)
+    if (viaBundle) {return viaBundle}
+    return (await this.tryAudit('bundle-audit', ['check', '--format', 'json'], workspaceRoot)) ?? {
+      vulnerabilities: [],
+      unpatchedGems: 0,
+    }
+  }
+
+  private async tryAudit(command: string, args: string[], cwd: string): Promise<BundlerAuditReport | null> {
     try {
-      const { stdout } = await execAsync(cmd, { cwd: workspaceRoot, maxBuffer: 5 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 5 * 1024 * 1024, timeout: 15000 })
+      return this.parseReport(stdout)
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string }
+      return execErr.stdout ? this.parseReport(execErr.stdout) : null
+    }
+  }
+
+  private parseReport(stdout: string): BundlerAuditReport | null {
+    try {
       const parsed = JSON.parse(stdout)
       const vulns: GemVulnerability[] = (parsed.results ?? []).map((r: { gem?: { name?: string; version?: string }; advisory?: { cve?: string; title?: string; url?: string; criticality?: string } }) => ({
         gemName: r.gem?.name ?? 'unknown',
@@ -41,7 +58,7 @@ export class BundlerAuditScanner {
         unpatchedGems: vulns.length,
       }
     } catch {
-      return { vulnerabilities: [], unpatchedGems: 0 }
+      return null
     }
   }
 

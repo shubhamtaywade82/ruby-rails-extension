@@ -75,7 +75,7 @@ export class SteepProvider {
 
   private async tryRun(command: string, args: string[], cwd: string): Promise<SteepDiagnostic[] | null> {
     try {
-      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 15000 })
       return parseSteepGithubOutput(stdout)
     } catch (err: unknown) {
       // Steep exits non-zero when it finds type errors, even though stdout still holds valid output.

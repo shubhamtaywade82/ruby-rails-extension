@@ -44,7 +44,7 @@ export class RakeTaskIndexer {
 
   private async tryRake(command: string, args: string[], cwd: string): Promise<RakeTask[] | null> {
     try {
-      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 15000 })
       return parseRakeTaskList(stdout)
     } catch {
       return null
