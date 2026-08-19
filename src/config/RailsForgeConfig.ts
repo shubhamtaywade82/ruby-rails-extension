@@ -13,6 +13,12 @@
  */
 
 import * as vscode from 'vscode'
+import { ApiDockMapping } from '../docs/ApiDockMethodIndex'
+
+export interface GemNamespaceMapping {
+  namespace: string
+  gem: string
+}
 
 export type AiProvider = 'ollama' | 'openai' | 'anthropic'
 export type ProjectTypeOverride = 'auto' | 'monolith' | 'api_only' | 'gem' | 'script'
@@ -48,6 +54,26 @@ export interface RailsForgeConfig {
   mcpEnabled: boolean
   apiDocsEnabled: boolean
   performanceCacheSize: number
+  apidockEnabled: boolean
+  apidockBaseUrl: string
+  apidockRequestTimeoutMs: number
+  apidockCacheTtlHours: number
+  apidockCustomMappings: ApiDockMapping[]
+  devdocsBaseUrl: string
+  devdocsOpenBesideActiveEditor: boolean
+  rubydocEnabled: boolean
+  rubydocBaseUrl: string
+  rubydocRequestTimeoutMs: number
+  rubydocCacheTtlDays: number
+  rubydocNamespaceMappings: GemNamespaceMapping[]
+  devdocsOfflineEnabled: boolean
+  devdocsDataBaseUrl: string
+  devdocsFetchTimeoutMs: number
+  devdocsRubySlug: string
+  devdocsRailsSlug: string
+  typesSteepEnabled: boolean
+  typesSteepScanOnSave: boolean
+  typesRbsSigDir: string
 }
 
 export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig {
@@ -71,7 +97,71 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     mcpEnabled: cfg.get<boolean>('mcp.enabled', true),
     apiDocsEnabled: cfg.get<boolean>('apiDocs.enabled', true),
     performanceCacheSize: cfg.get<number>('performance.cacheSize', 200),
+    apidockEnabled: cfg.get<boolean>('apidock.enabled', true),
+    apidockBaseUrl: cfg.get<string>('apidock.baseUrl', 'https://apidock.com'),
+    apidockRequestTimeoutMs: cfg.get<number>('apidock.requestTimeoutMs', 5000),
+    apidockCacheTtlHours: cfg.get<number>('apidock.cacheTtlHours', 24),
+    apidockCustomMappings: sanitizeApiDockMappings(cfg.get<unknown>('apidock.customMappings', [])),
+    devdocsBaseUrl: cfg.get<string>('devdocs.baseUrl', 'https://devdocs.io'),
+    devdocsOpenBesideActiveEditor: cfg.get<boolean>('devdocs.openBesideActiveEditor', true),
+    rubydocEnabled: cfg.get<boolean>('rubydoc.enabled', true),
+    rubydocBaseUrl: cfg.get<string>('rubydoc.baseUrl', 'https://www.rubydoc.info'),
+    rubydocRequestTimeoutMs: cfg.get<number>('rubydoc.requestTimeoutMs', 6000),
+    rubydocCacheTtlDays: cfg.get<number>('rubydoc.cacheTtlDays', 7),
+    rubydocNamespaceMappings: sanitizeGemNamespaceMappings(cfg.get<unknown>('rubydoc.namespaceMappings', [])),
+    devdocsOfflineEnabled: cfg.get<boolean>('devdocs.offlineEnabled', true),
+    devdocsDataBaseUrl: cfg.get<string>('devdocs.dataBaseUrl', 'https://documents.devdocs.io'),
+    devdocsFetchTimeoutMs: cfg.get<number>('devdocs.fetchTimeoutMs', 30000),
+    devdocsRubySlug: cfg.get<string>('devdocs.rubySlug', ''),
+    devdocsRailsSlug: cfg.get<string>('devdocs.railsSlug', ''),
+    typesSteepEnabled: cfg.get<boolean>('types.steepEnabled', false),
+    typesSteepScanOnSave: cfg.get<boolean>('types.steepScanOnSave', false),
+    typesRbsSigDir: cfg.get<string>('types.rbsSigDir', 'sig'),
   }
+}
+
+/** Same defensive-validation rationale as `sanitizeApiDockMappings` — user JSON, dropped if malformed. */
+function sanitizeGemNamespaceMappings(raw: unknown): GemNamespaceMapping[] {
+  if (!Array.isArray(raw)) {return []}
+
+  const result: GemNamespaceMapping[] = []
+  for (const entry of raw) {
+    if (
+      entry
+      && typeof entry === 'object'
+      && typeof (entry as Record<string, unknown>).namespace === 'string'
+      && typeof (entry as Record<string, unknown>).gem === 'string'
+    ) {
+      result.push(entry as GemNamespaceMapping)
+    }
+  }
+  return result
+}
+
+/**
+ * `railsForge.apidock.customMappings` is user-authored JSON, so it's validated
+ * defensively rather than trusted — a malformed entry is dropped rather than
+ * crashing activation or corrupting ApiDockMethodIndex's lookup map.
+ */
+function sanitizeApiDockMappings(raw: unknown): ApiDockMapping[] {
+  if (!Array.isArray(raw)) {return []}
+
+  const validNamespaces = new Set(['rails', 'ruby', 'rspec'])
+  const result: ApiDockMapping[] = []
+  for (const entry of raw) {
+    if (
+      entry
+      && typeof entry === 'object'
+      && typeof (entry as Record<string, unknown>).keyword === 'string'
+      && typeof (entry as Record<string, unknown>).namespace === 'string'
+      && validNamespaces.has((entry as Record<string, unknown>).namespace as string)
+      && typeof (entry as Record<string, unknown>).className === 'string'
+      && typeof (entry as Record<string, unknown>).methodName === 'string'
+    ) {
+      result.push(entry as ApiDockMapping)
+    }
+  }
+  return result
 }
 
 /** Combines exclude glob patterns into the single-string form `vscode.workspace.findFiles` expects. */

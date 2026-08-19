@@ -1,0 +1,8 @@
+<div id="<%= dom_id(article) %>" class="article-card">
+  <h2><%= link_to article.title, article_path(article) %></h2>
+  <p class="author">By <%= article.user.name %></p>
+  <div class="body">
+    <%= truncate(article.body, length: 150) %>
+  </div>
+  <span class="badge <%= article.status %>"><%= article.status.capitalize %></span>
+</div>

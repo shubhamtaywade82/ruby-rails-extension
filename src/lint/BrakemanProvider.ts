@@ -2,10 +2,10 @@
  * BrakemanProvider - Runs Brakeman security analysis on Rails projects
  */
 
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export interface BrakemanWarning {
   warning_type: string
@@ -27,30 +27,35 @@ export interface BrakemanReport {
 
 export class BrakemanProvider {
   async runScan(workspaceRoot: string): Promise<BrakemanReport> {
-    const cmd = 'bundle exec brakeman -f json -q || brakeman -f json -q'
+    const viaBundle = await this.tryBrakeman('bundle', ['exec', 'brakeman', '-f', 'json', '-q'], workspaceRoot)
+    if (viaBundle) {return viaBundle}
+    return (await this.tryBrakeman('brakeman', ['-f', 'json', '-q'], workspaceRoot)) ?? {
+      warnings: [],
+      errors: ['Brakeman execution failed.'],
+      scanDuration: 0,
+    }
+  }
+
+  private async tryBrakeman(command: string, args: string[], cwd: string): Promise<BrakemanReport | null> {
     try {
-      const { stdout } = await execAsync(cmd, { cwd: workspaceRoot, maxBuffer: 10 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 30000 })
+      return this.parseReport(stdout)
+    } catch (err: unknown) {
+      const execErr = err as { stdout?: string }
+      return execErr.stdout ? this.parseReport(execErr.stdout) : null
+    }
+  }
+
+  private parseReport(stdout: string): BrakemanReport | null {
+    try {
       const parsed = JSON.parse(stdout)
       return {
         warnings: parsed.warnings ?? [],
         errors: parsed.errors ?? [],
         scanDuration: parsed.scan_info?.duration ?? 0,
       }
-    } catch (err: unknown) {
-      const execErr = err as { stdout?: string }
-      if (execErr.stdout) {
-        try {
-          const parsed = JSON.parse(execErr.stdout)
-          return {
-            warnings: parsed.warnings ?? [],
-            errors: parsed.errors ?? [],
-            scanDuration: parsed.scan_info?.duration ?? 0,
-          }
-        } catch {
-          // Fall through
-        }
-      }
-      return { warnings: [], errors: ['Brakeman execution failed.'], scanDuration: 0 }
+    } catch {
+      return null
     }
   }
 

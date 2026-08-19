@@ -35,7 +35,17 @@ export class ProjectPatternIndexer {
   indexFile(filePath: string, content: string): void {
     const type = this.classifyPath(filePath)
     if (!type) {return}
+    this.indexFileAs(filePath, content, type)
+  }
 
+  /**
+   * Same as `indexFile`, but the caller supplies `type` directly instead of it being
+   * derived from `filePath` via `classifyPath`/`DIR_TYPE_MAP`. For a caller that already
+   * knows the type from context — e.g. scanning a project's own differently-named
+   * directory (`app/operations` instead of `app/services`) for pattern inference, where
+   * the path wouldn't match any DIR_TYPE_MAP segment on its own.
+   */
+  indexFileAs(filePath: string, content: string, type: PatternType): void {
     this.removeFile(filePath)
 
     const lines = content.split('\n')

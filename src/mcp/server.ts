@@ -24,6 +24,17 @@ import { openIndexDatabase } from '../indexer/database'
 import { isPersistentIndexSupported } from '../indexer/nativeSupport'
 import { PersistentDependencyGraph } from '../indexer/PersistentDependencyGraph'
 import { DuplicateMethodDetector } from '../indexer/DuplicateMethodDetector'
+import { ApiDockClient } from '../docs/ApiDockClient'
+import { ApiDockMethodIndex } from '../docs/ApiDockMethodIndex'
+import { RubyDocProvider } from '../docs/RubyDocProvider'
+import { GemSymbolResolver } from '../docs/GemSymbolResolver'
+import { parseGemfileLock } from '../gems/GemfileLockParser'
+import { DevDocsOfflineIndex } from '../docs/DevDocsOfflineIndex'
+import { RBSIndex } from '../types/RBSIndex'
+import { RakeTaskIndexer } from '../rake/RakeTaskIndexer'
+import { getLearningResource } from '../principles/LearningResources'
+import { loadProjectGuidelines } from '../config/ProjectGuidelines'
+import { loadEffectiveServiceObjectGuidelines } from '../config/EffectiveGuidelines'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -214,7 +225,7 @@ server.registerTool(
   'find_duplicate_methods',
   {
     title: 'Find near-duplicate methods',
-    description: 'Finds near-duplicate method bodies across the indexed codebase (candidates for extracting a shared concern/method). Requires the persistent AST index.',
+    description: 'Checks the codebase for near-duplicate method bodies (candidates for extracting a shared concern/method) — call this before generating a new method, to avoid writing a redundant duplicate of existing logic. Requires the persistent AST index.',
     inputSchema: {},
   },
   async () => {
@@ -224,6 +235,266 @@ server.registerTool(
     }
     const detector = new DuplicateMethodDetector(db)
     return { content: [{ type: 'text', text: JSON.stringify(detector.findDuplicates(), null, 2) }] }
+  },
+)
+
+const apiDockClient = new ApiDockClient()
+const apiDockMethodIndex = new ApiDockMethodIndex()
+
+/** apidock.com groups docs under a top-level rails/ruby/rspec namespace; guess it from the class name's prefix. */
+function classifyApiDockNamespace(className: string): 'rails' | 'ruby' | 'rspec' {
+  if (/^RSpec\b/.test(className)) {return 'rspec'}
+  if (/^(ActiveRecord|ActiveModel|ActiveSupport|ActionController|ActionView|ActionMailer|ActionCable|ActiveJob|AbstractController|ActionDispatch|Rails)\b/.test(className)) {return 'rails'}
+  return 'ruby'
+}
+
+/**
+ * Prefers ApiDockMethodIndex's curated mapping (more precise apidock.com class paths, e.g.
+ * "ActiveModel/Validations/ClassMethods" for `validates`), but only when it actually agrees
+ * with the caller's class_name — otherwise falls back to constructing the lookup directly
+ * from class_name/method_name so a method also indexed under a different class isn't
+ * silently misattributed.
+ */
+function resolveApiDockLookup(className: string, methodName: string) {
+  const indexed = apiDockMethodIndex.lookup(methodName)
+  const normalizedClassName = className.replace(/::/g, '/')
+  if (indexed && indexed.className.toLowerCase() === normalizedClassName.toLowerCase()) {
+    return indexed
+  }
+  return {
+    namespace: classifyApiDockNamespace(className),
+    className: normalizedClassName,
+    methodName,
+  }
+}
+
+server.registerTool(
+  'get_method_notes',
+  {
+    title: 'Get APIDock method notes',
+    description: 'Fetches apidock.com\'s community notes and doc summary for a Ruby/Rails/RSpec method — call this before generating code that uses an unfamiliar method, to ground it in real-world gotchas (skipped validations/callbacks, deprecated behavior, surprising defaults) that official docs often miss. This is APIDock only (community notes); for the official signature/description of a Ruby core or Rails framework method, prefer get_offline_docs instead — it\'s instant (no network call) when the docset is cached.',
+    inputSchema: {
+      method_name: z.string().describe('Method name, e.g. "update_attribute"'),
+      class_name: z.string().describe('Class or module name, e.g. "ActiveRecord::Base"'),
+    },
+  },
+  async ({ method_name, class_name }) => {
+    const lookup = resolveApiDockLookup(class_name, method_name)
+    const notes = await apiDockClient.fetchNotes(lookup)
+    if (!notes) {
+      return { content: [{ type: 'text', text: `No APIDock notes found for ${class_name}#${method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(notes, null, 2) }] }
+  },
+)
+
+const rubyDocProvider = new RubyDocProvider()
+
+function loadLockedGemVersions(): Map<string, string> {
+  const lockPath = path.join(workspaceRoot, 'Gemfile.lock')
+  if (!fs.existsSync(lockPath)) {return new Map()}
+  return parseGemfileLock(fs.readFileSync(lockPath, 'utf8'))
+}
+
+server.registerTool(
+  'get_gem_documentation',
+  {
+    title: 'Get gem documentation (rubydoc.info)',
+    description: 'Fetches YARD documentation (signature, description, params, return type) for a class/method in one of this project\'s dependency gems, at the exact version locked in Gemfile.lock — use this before generating code that calls into a gem (Pundit, Sidekiq, dry-rb, etc.) whose API isn\'t in RailsForge\'s own indexed patterns.',
+    inputSchema: {
+      gem_name: z.string().optional().describe('Gem name as it appears in Gemfile.lock, e.g. "pundit". Omitted: resolved from class_name\'s top-level namespace.'),
+      class_name: z.string().describe('Class or module name, e.g. "Pundit" or "Sidekiq::Client"'),
+      method_name: z.string().describe('Method name, e.g. "authorize"'),
+      version: z.string().optional().describe('Exact gem version. Omitted: read from this project\'s Gemfile.lock.'),
+    },
+  },
+  async ({ gem_name, class_name, method_name, version }) => {
+    const lockedVersions = loadLockedGemVersions()
+
+    let gem = gem_name
+    let resolvedVersion = version
+    if (!gem) {
+      const resolved = new GemSymbolResolver(lockedVersions).resolve(class_name)
+      if (!resolved) {
+        return { content: [{ type: 'text', text: `Could not determine which gem defines "${class_name}" — pass gem_name explicitly, or check it's listed in this project's Gemfile.lock.` }] }
+      }
+      gem = resolved.gem
+      resolvedVersion = resolvedVersion ?? resolved.version
+    }
+    resolvedVersion = resolvedVersion ?? lockedVersions.get(gem)
+    if (!resolvedVersion) {
+      return { content: [{ type: 'text', text: `No locked version found for gem "${gem}" in Gemfile.lock, and no version was given.` }] }
+    }
+
+    const entry = await rubyDocProvider.fetchMethod(gem, resolvedVersion, class_name, method_name)
+    if (!entry) {
+      return { content: [{ type: 'text', text: `No rubydoc.info documentation found for ${gem}@${resolvedVersion} ${class_name}#${method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(entry, null, 2) }] }
+  },
+)
+
+let devDocsIndex: DevDocsOfflineIndex | null = null
+
+/**
+ * Built once per server process (not per call): DevDocsOfflineIndex lazily parses each
+ * docset's ~10-15MB db.json on first lookup and keeps it in memory, so reusing one
+ * instance across tool calls is what makes repeat lookups actually instant instead of
+ * re-parsing that JSON every time.
+ */
+function getDevDocsIndex(): DevDocsOfflineIndex {
+  if (devDocsIndex) {return devDocsIndex}
+
+  const cacheDir = path.join(workspaceRoot, '.railsforge', 'devdocs')
+  let slugs: string[] = []
+  try {
+    slugs = fs.readdirSync(cacheDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
+  } catch {
+    slugs = []
+  }
+  devDocsIndex = new DevDocsOfflineIndex(cacheDir, slugs)
+  return devDocsIndex
+}
+
+server.registerTool(
+  'get_offline_docs',
+  {
+    title: 'Get offline DevDocs documentation',
+    description: 'Looks up a Ruby/Rails method or class in this project\'s locally cached DevDocs data (.railsforge/devdocs/, downloaded by the extension on activation) — instant, no network call, no tokens spent fetching a web page. Prefer this over get_method_notes/get_gem_documentation when you just need the official signature/description for a Ruby core or Rails framework method; use those for community gotchas or gem-specific (non-Rails) APIs instead.',
+    inputSchema: {
+      symbol_name: z.string().describe('Bare method name (e.g. "update_attribute") or class/module name (e.g. "ActiveRecord::Base")'),
+    },
+  },
+  async ({ symbol_name }) => {
+    const result = getDevDocsIndex().lookup(symbol_name)
+    if (!result) {
+      return { content: [{ type: 'text', text: `No offline DevDocs entry found for "${symbol_name}". Either it isn't cached yet (open this workspace in VS Code with RailsForge, or run "RailsForge: Update Offline DevDocs Cache"), or it doesn't exist in the cached docset(s).` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+  },
+)
+
+let rbsIndex: RBSIndex | null = null
+
+/** Built once per server process — RBSIndex.loadFromWorkspace walks every .rbs file under sig/, not worth repeating per call. */
+function getRbsIndex(): RBSIndex {
+  if (!rbsIndex) {
+    rbsIndex = new RBSIndex()
+    rbsIndex.loadFromWorkspace(workspaceRoot, 'sig')
+  }
+  return rbsIndex
+}
+
+server.registerTool(
+  'get_rbs_signature',
+  {
+    title: 'Get RBS type signature',
+    description: 'Returns the RBS (Ruby type signature) declaration for a method, from this project\'s sig/ directory, if one exists. Use this to check a method\'s declared parameter/return types before calling it or writing code against it.',
+    inputSchema: {
+      method_name: z.string().describe('Method name, e.g. "authorize"'),
+      class_name: z.string().optional().describe('Class/module name to disambiguate when the same method name is declared on multiple classes'),
+    },
+  },
+  async ({ method_name, class_name }) => {
+    const index = getRbsIndex()
+    if (index.isEmpty) {
+      return { content: [{ type: 'text', text: 'No RBS signatures found (no sig/ directory, or it\'s empty).' }] }
+    }
+    const matches = index.lookup(method_name)
+    const filtered = class_name ? matches.filter(m => m.className === class_name) : matches
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text', text: `No RBS signature found for ${class_name ? `${class_name}#${method_name}` : method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'list_rake_tasks',
+  {
+    title: 'List Rake tasks',
+    description: 'Lists this project\'s Rake tasks (name, namespace, description) via `rake -T` — use before suggesting a shell command, to check whether a task for it already exists (e.g. db:migrate, a custom deploy/report task) rather than proposing a new script.',
+    inputSchema: { filter: z.string().optional().describe('Only return tasks whose name contains this substring') },
+  },
+  async ({ filter }) => {
+    const tasks = await new RakeTaskIndexer().listTasks(workspaceRoot)
+    const filtered = filter ? tasks.filter(t => t.name.includes(filter)) : tasks
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text', text: 'No Rake tasks found (no Rakefile, rake not installed, or no tasks matched the filter).' }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'suggest_learning_resource',
+  {
+    title: 'Suggest a learning resource for a design smell',
+    description: 'Given one of RailsForge\'s own design-principle diagnostic ids (SRP-FAT-CLASS, DEMETER-VIOLATION, KISS-METAPROGRAMMING, YAGNI-UNUSED-PRIVATE — as seen in this project\'s "RailsForge Principles" diagnostics), returns a specific book/chapter recommendation for further reading.',
+    inputSchema: {
+      diagnostic_id: z.enum(['SRP-FAT-CLASS', 'DEMETER-VIOLATION', 'KISS-METAPROGRAMMING', 'YAGNI-UNUSED-PRIVATE']),
+    },
+  },
+  async ({ diagnostic_id }) => {
+    const resource = getLearningResource(diagnostic_id)
+    if (!resource) {
+      return { content: [{ type: 'text', text: `No learning resource mapped for "${diagnostic_id}".` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(resource, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'get_project_guidelines',
+  {
+    title: 'Get project architecture guidelines',
+    description: 'Returns this project\'s actual conventions — from .railsforge.yml if the team wrote one, otherwise learned from the codebase\'s own existing Service Objects (majority base class + entry-point method name, only when the codebase actually agrees on one) — so an AI agent generates a Service Object matching this repo\'s real pattern (e.g. `Interactor`/`run`) instead of assuming the generic Rails-generator default (`ApplicationService`/`call`). Call this before generating a new Service Object.',
+    inputSchema: {},
+  },
+  async () => {
+    const explicit = loadProjectGuidelines(workspaceRoot)
+    const indexer = loadPatternIndexer()
+    const serviceObjects = loadEffectiveServiceObjectGuidelines(workspaceRoot, indexer)
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          serviceObjects,
+          preferredLibraries: explicit?.preferredLibraries ?? null,
+          testing: explicit?.testing ?? null,
+          configFile: explicit ? '.railsforge.yml' : null,
+        }, null, 2),
+      }],
+    }
+  },
+)
+
+server.registerTool(
+  'get_example_file',
+  {
+    title: 'Get a representative example file for a pattern type',
+    description: 'Returns the full content of this project\'s most complete existing Service/Query/Form/Policy/Decorator/Concern, so an AI agent can learn the repo\'s real style (naming, error handling, how it structures the class) by example instead of guessing. Call this alongside get_project_guidelines before generating a new file of the same pattern type.',
+    inputSchema: {
+      pattern_type: z.enum(['service', 'query', 'form', 'policy', 'decorator', 'concern']),
+    },
+  },
+  async ({ pattern_type }) => {
+    const indexer = loadPatternIndexer()
+    const candidates = indexer.getPatternsByType(pattern_type as PatternType)
+    if (candidates.length === 0) {
+      return { content: [{ type: 'text', text: `No existing ${pattern_type} found in this project to use as an example.` }] }
+    }
+
+    // "Most complete" as a proxy for "most representative": the one with the most public
+    // methods is less likely to be a trivial/stub example.
+    const best = candidates.reduce((a, b) => (b.publicMethods.length > a.publicMethods.length ? b : a))
+    try {
+      const content = fs.readFileSync(best.filePath, 'utf8')
+      return { content: [{ type: 'text', text: JSON.stringify({ filePath: best.filePath, name: best.name, content }, null, 2) }] }
+    } catch {
+      return { content: [{ type: 'text', text: `Found ${best.name} at ${best.filePath} but could not read the file.` }] }
+    }
   },
 )
 

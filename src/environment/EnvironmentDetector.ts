@@ -38,6 +38,7 @@ export interface ProjectEnvironment {
   hasViewComponent: boolean
   hasStrongMigrations: boolean
   hasBrakeman: boolean
+  hasPry: boolean
   testFramework: 'rspec' | 'minitest'
   binstubs: Set<string>
 }
@@ -58,6 +59,7 @@ export class EnvironmentDetector {
     const hasViewComponent = gemfileLockContent.includes('view_component')
     const hasStrongMigrations = gemfileLockContent.includes('strong_migrations')
     const hasBrakeman = gemfileLockContent.includes('brakeman')
+    const hasPry = gemfileLockContent.includes('pry')
     const testFramework = gemfileLockContent.includes('rspec-rails') ? 'rspec' : 'minitest'
     const binstubs = this.detectBinstubs(workspaceRoot)
     const projectType = this.detectProjectType(workspaceRoot, hasRails)
@@ -75,6 +77,7 @@ export class EnvironmentDetector {
       hasViewComponent,
       hasStrongMigrations,
       hasBrakeman,
+      hasPry,
       testFramework,
       binstubs,
     }

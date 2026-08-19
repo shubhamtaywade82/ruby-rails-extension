@@ -10,6 +10,7 @@
 export interface EmbeddingClientConfig {
   ollamaHost: string
   model: string
+  timeoutMs?: number
 }
 
 export class EmbeddingClient {
@@ -23,6 +24,7 @@ export class EmbeddingClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.config.model, prompt: text }),
+        signal: AbortSignal.timeout(this.config.timeoutMs ?? 5000),
       })
       if (!res.ok) {return null}
 

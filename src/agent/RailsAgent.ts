@@ -177,6 +177,12 @@ export class RailsAgent {
       `Fix the following Ruby snippet so it no longer triggers this issue: "${diagnosticMessage}".`,
       'Replace ONLY the targeted snippet. Do NOT output the entire file, class, or module.',
       'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
+      'The File Content above is READ-ONLY context, not something you can edit — but if a sibling method there ' +
+        'shares this exact resource/pattern (e.g. both open the same kind of connection), your fix must stay ' +
+        'consistent with it. Do not introduce a convention (like an injectable instance variable) in this snippet ' +
+        'that the sibling method would then be missing.',
+      'Never close, disconnect, or otherwise release an object this snippet did not itself create — if the object ' +
+        'may have been supplied by the caller (e.g. via an instance variable), ownership isn\'t yours to end.',
       'Respond with ONLY the replacement Ruby code for this snippet. No explanation, no markdown code fences.',
       '',
       code,

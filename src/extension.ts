@@ -5,6 +5,8 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 
 import { SchemaIndexer } from './rails/SchemaIndexer'
 import { RoutesIndexer } from './rails/RoutesIndexer'
@@ -61,8 +63,29 @@ import { GemLensProvider } from './gems/GemLensProvider'
 import { RubyGemsClient } from './gems/RubyGemsClient'
 import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
 import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
+import { ApiDockClient } from './docs/ApiDockClient'
+import { ApiDockMethodIndex } from './docs/ApiDockMethodIndex'
+import { ApiDockHoverProvider } from './docs/ApiDockHoverProvider'
+import { DevDocsPanel } from './docs/DevDocsPanel'
+import { RubyDocProvider, RubyDocEntry } from './docs/RubyDocProvider'
+import { GemSymbolResolver } from './docs/GemSymbolResolver'
+import { parseGemfileLock } from './gems/GemfileLockParser'
+import { DevDocsFetcher, toDevDocsSlug } from './docs/DevDocsFetcher'
+import { DevDocsOfflineIndex } from './docs/DevDocsOfflineIndex'
+import { DevDocsHoverProvider } from './docs/DevDocsHoverProvider'
+import { RakeTaskIndexer } from './rake/RakeTaskIndexer'
+import { RakeTaskTreeProvider } from './rake/RakeTaskTreeProvider'
+import { RuboCopStyleGuideId, getStyleGuideApplication, ensureGemInGemfile, applyInheritGemBlock, applyAirbnbInheritFrom } from './lint/RuboCopStyleGuides'
+import { RBSIndex } from './types/RBSIndex'
+import { RBSHoverProvider } from './types/RBSHoverProvider'
+import { RBSDefinitionProvider } from './types/RBSDefinitionProvider'
+import { SteepProvider } from './types/SteepProvider'
+import { LearningResource } from './principles/LearningResources'
+import { loadEffectiveServiceObjectGuidelines } from './config/EffectiveGuidelines'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 import { Logger } from './util/Logger'
+
+const execFileAsync = promisify(execFile)
 
 export function activate(context: vscode.ExtensionContext): void {
   Logger.init(context)
@@ -93,6 +116,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const turboFrameNavigator = new TurboFrameNavigator()
   const viewPartialResolver = new ViewPartialResolver()
   const rubyGemsClient = new RubyGemsClient(config.performanceCacheSize)
+  const apiDockClient = new ApiDockClient({
+    cacheSize: config.performanceCacheSize,
+    cacheTtlMs: config.apidockCacheTtlHours * 60 * 60 * 1000,
+    timeoutMs: config.apidockRequestTimeoutMs,
+    baseUrl: config.apidockBaseUrl,
+  })
+  const apiDockMethodIndex = new ApiDockMethodIndex(config.apidockCustomMappings)
+  const rubyDocProvider = new RubyDocProvider({
+    cacheSize: config.performanceCacheSize,
+    cacheTtlMs: config.rubydocCacheTtlDays * 24 * 60 * 60 * 1000,
+    timeoutMs: config.rubydocRequestTimeoutMs,
+    baseUrl: config.rubydocBaseUrl,
+  })
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -103,6 +139,7 @@ export function activate(context: vscode.ExtensionContext): void {
     queryExtractor,
     formExtractor,
     valueExtractor,
+    projectPatternIndexer,
   )
   const envDetector = new EnvironmentDetector()
 
@@ -111,6 +148,32 @@ export function activate(context: vscode.ExtensionContext): void {
   if (config.projectTypeOverride !== 'auto') {
     env.projectType = config.projectTypeOverride
   }
+
+  // Offline DevDocs cache: workspace-local (not globalStorageUri) so the standalone MCP
+  // server can find it too — same rationale as PersistentIndexManager's .railsforge/index.sqlite3.
+  const devDocsCacheDir = path.join(workspaceRoot, '.railsforge', 'devdocs')
+  const devDocsFetcher = new DevDocsFetcher({
+    cacheDir: devDocsCacheDir,
+    timeoutMs: config.devdocsFetchTimeoutMs,
+    baseUrl: config.devdocsDataBaseUrl,
+  })
+  const devDocsSlugs = [config.devdocsRubySlug || toDevDocsSlug('ruby', env.rubyVersion)]
+  if (env.hasRails) {
+    devDocsSlugs.push(config.devdocsRailsSlug || toDevDocsSlug('rails', env.railsVersion))
+  }
+  // Empty until the background download (kicked off below, once workspaceRoot is confirmed
+  // non-empty) finishes — DevDocsHoverProvider reads through this holder (same "mutable
+  // holder swapped once ready" idiom as `persistentIndex` below) so hovers work immediately
+  // once the first activation's downloads land, without needing a window reload.
+  const devDocsIndexHolder: { index: DevDocsOfflineIndex } = { index: new DevDocsOfflineIndex(devDocsCacheDir, []) }
+
+  const rbsIndex = new RBSIndex()
+  if (workspaceRoot) {
+    rbsIndex.loadFromWorkspace(workspaceRoot, config.typesRbsSigDir)
+  }
+  const steepProvider = new SteepProvider()
+  const steepDiagnostics = vscode.languages.createDiagnosticCollection('steep')
+  context.subscriptions.push(steepDiagnostics)
 
   // Set UI `when`-clause contexts (see package.json's menus.commandPalette and
   // keybindings) so the Command Palette and keybindings only surface commands that
@@ -124,6 +187,7 @@ export function activate(context: vscode.ExtensionContext): void {
   void vscode.commands.executeCommand('setContext', 'railsforge.hasViewComponent', env.hasViewComponent)
   void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', config.aiProvider)
   void vscode.commands.executeCommand('setContext', 'railsforge.apiDocsEnabled', config.apiDocsEnabled)
+  void vscode.commands.executeCommand('setContext', 'railsforge.typesSteepEnabled', config.typesSteepEnabled)
 
   Logger.info(`RailsForge activated. Project type: ${env.projectType}, Ruby: ${env.rubyVersion}, Rails: ${env.hasRails ? env.railsVersion : 'none'}`)
 
@@ -171,6 +235,14 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   }
 
+  // Offline DevDocs: downloads (or reuses an already-cached) docset in the background,
+  // then swaps devDocsIndexHolder.index so DevDocsHoverProvider picks it up without a
+  // window reload. Silent on failure/offline — APIDock/RubyDoc's network-backed hovers
+  // and the live `railsforge.openDevDocs` webview keep working regardless.
+  if (workspaceRoot && config.devdocsOfflineEnabled) {
+    void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+  }
+
   // 2. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
     loadSchema(workspaceRoot, schemaIndexer)
@@ -197,12 +269,26 @@ export function activate(context: vscode.ExtensionContext): void {
   )
   vscode.window.registerTreeDataProvider('railsforge.architectureView', architectureTreeProvider)
   vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider())
+  const rakeTaskIndexer = new RakeTaskIndexer()
+  const rakeTaskTreeProvider = new RakeTaskTreeProvider(rakeTaskIndexer, workspaceRoot)
+  vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider)
+  void vscode.commands.executeCommand('setContext', 'railsforge.hasRakefile', workspaceRoot ? fs.existsSync(path.join(workspaceRoot, 'Rakefile')) : false)
 
   // 3. Register Providers
   context.subscriptions.push(
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new GemLensProvider(rubyGemsClient)),
+    vscode.languages.registerHoverProvider(
+      { language: 'ruby', scheme: 'file' },
+      new DevDocsHoverProvider(devDocsIndexHolder, () => readConfig().devdocsOfflineEnabled),
+    ),
+    vscode.languages.registerHoverProvider(
+      { language: 'ruby', scheme: 'file' },
+      new ApiDockHoverProvider(apiDockClient, apiDockMethodIndex, () => readConfig().apidockEnabled),
+    ),
+    vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new RBSHoverProvider(rbsIndex)),
+    vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, new RBSDefinitionProvider(rbsIndex)),
     vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, factoryBotResolver),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html'], new StimulusDefinitionProvider(stimulusIndexer)),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html', 'ruby'], new TurboFrameDefinitionProvider(turboFrameNavigator)),
@@ -258,6 +344,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }, null, context.subscriptions)
 
   let lastBrakemanScanOnSave = 0
+  let lastSteepScanOnSave = 0
   vscode.workspace.onDidSaveTextDocument(doc => {
     if (doc.languageId !== 'ruby') {return}
     const saveConfig = readConfig()
@@ -282,6 +369,15 @@ export function activate(context: vscode.ExtensionContext): void {
                 .then(reportDoc => vscode.window.showTextDocument(reportDoc))
             })
         })
+      }
+    }
+    if (saveConfig.typesSteepEnabled && saveConfig.typesSteepScanOnSave) {
+      // Same debounce rationale as Brakeman above: Steep type-checks the whole configured
+      // target, not just the saved file, so a save-triggered run needs a floor between runs.
+      const now = Date.now()
+      if (now - lastSteepScanOnSave >= 30_000) {
+        lastSteepScanOnSave = now
+        void updateSteepDiagnostics(steepProvider, steepDiagnostics, workspaceRoot)
       }
     }
   }, null, context.subscriptions)
@@ -311,6 +407,15 @@ export function activate(context: vscode.ExtensionContext): void {
     schemaIndexer,
     env,
     semanticSearchIndex,
+    rubyDocProvider,
+    devDocsFetcher,
+    devDocsCacheDir,
+    devDocsSlugs,
+    devDocsIndexHolder,
+    rakeTaskTreeProvider,
+    rbsIndex,
+    steepProvider,
+    steepDiagnostics,
   )
 
   // 5. Register Chat Participant
@@ -627,6 +732,56 @@ function registerMcpServer(root: string, mcpServerPath: string): void {
   fs.writeFileSync(mcpConfigPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 }
 
+async function refreshDevDocsCache(
+  fetcher: DevDocsFetcher,
+  cacheDir: string,
+  slugs: string[],
+  holder: { index: DevDocsOfflineIndex },
+  forceRefresh: boolean,
+): Promise<boolean[]> {
+  const results = await Promise.all(slugs.map(slug => fetcher.ensureDocset(slug, forceRefresh)))
+  holder.index = new DevDocsOfflineIndex(cacheDir, slugs)
+  if (results.some(Boolean)) {
+    Logger.info(`RailsForge: offline DevDocs cache ready for ${slugs.filter((_, i) => results[i]).join(', ')}.`)
+  }
+  if (results.some(ok => !ok)) {
+    Logger.warn(`RailsForge: could not download offline DevDocs data for ${slugs.filter((_, i) => !results[i]).join(', ')} (offline, or docset unavailable at that slug).`)
+  }
+  return results
+}
+
+async function updateSteepDiagnostics(
+  steepProvider: SteepProvider,
+  collection: vscode.DiagnosticCollection,
+  workspaceRoot: string,
+): Promise<number> {
+  const diagnostics = await steepProvider.runCheck(workspaceRoot)
+
+  const byFile = new Map<string, vscode.Diagnostic[]>()
+  for (const diag of diagnostics) {
+    const absolutePath = path.isAbsolute(diag.file) ? diag.file : path.join(workspaceRoot, diag.file)
+    const range = new vscode.Range(
+      new vscode.Position(Math.max(0, diag.line - 1), Math.max(0, diag.col - 1)),
+      new vscode.Position(Math.max(0, diag.endLine - 1), diag.endColumn),
+    )
+    const severity = diag.severity === 'error' ? vscode.DiagnosticSeverity.Error
+      : diag.severity === 'warning' ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Information
+    const vscodeDiag = new vscode.Diagnostic(range, diag.message, severity)
+    vscodeDiag.source = 'Steep'
+
+    const list = byFile.get(absolutePath) ?? []
+    list.push(vscodeDiag)
+    byFile.set(absolutePath, list)
+  }
+
+  collection.clear()
+  for (const [file, fileDiagnostics] of byFile) {
+    collection.set(vscode.Uri.file(file), fileDiagnostics)
+  }
+  return diagnostics.length
+}
+
 function loadSchema(root: string, indexer: SchemaIndexer): void {
   const schemaPath = path.join(root, 'db', 'schema.rb')
   if (fs.existsSync(schemaPath)) {
@@ -699,6 +854,15 @@ function registerCommands(
   schemaIndexer: SchemaIndexer,
   env: ProjectEnvironment,
   semanticSearchIndex: SemanticSearchIndex,
+  rubyDocProvider: RubyDocProvider,
+  devDocsFetcher: DevDocsFetcher,
+  devDocsCacheDir: string,
+  devDocsSlugs: string[],
+  devDocsIndexHolder: { index: DevDocsOfflineIndex },
+  rakeTaskTreeProvider: RakeTaskTreeProvider,
+  rbsIndex: RBSIndex,
+  steepProvider: SteepProvider,
+  steepDiagnostics: vscode.DiagnosticCollection,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
@@ -1063,6 +1227,7 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.refactorSelection', () => refactoringMenu.promptRefactoring()),
     vscode.commands.registerCommand('railsforge.goToModel', () => navigateCompanion(mvc, 'model')),
     vscode.commands.registerCommand('railsforge.goToController', () => navigateCompanion(mvc, 'controller')),
+    vscode.commands.registerCommand('railsforge.goToView', () => navigateToView(mvc)),
     vscode.commands.registerCommand('railsforge.goToSpec', () => navigateCompanion(mvc, 'spec')),
     vscode.commands.registerCommand('railsforge.searchRoutes', async () => {
       const allRoutes = routes.getAllRoutes()
@@ -1074,6 +1239,44 @@ function registerCommands(
       if (selected) {
         vscode.window.showInformationMessage(`Selected Route: ${selected.label} => ${selected.description}`)
       }
+    }),
+    vscode.commands.registerCommand('railsforge.showSchemaPeek', async () => {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) {
+        vscode.window.showWarningMessage('RailsForge: No active editor.')
+        return
+      }
+
+      // A PascalCase word under the cursor (e.g. hovering "User" in "belongs_to :user"'s
+      // inferred class, or a bare reference elsewhere) wins over the current file, so
+      // peeking a *different* model than the one you're editing works too.
+      const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z][A-Za-z0-9_]*/)
+      const word = wordRange ? editor.document.getText(wordRange) : undefined
+      const fileModel = mvc.identifyFileType(editor.document.fileName) === 'model'
+        ? mvc.extractResourceInfo(editor.document.fileName)?.singularName
+        : undefined
+      const modelName = word ?? fileModel
+
+      if (!modelName) {
+        vscode.window.showWarningMessage('RailsForge: Place the cursor on a model name (e.g. "User"), or run this from a model file.')
+        return
+      }
+
+      const columns = schemaIndexer.getModelColumns(modelName)
+      if (columns.length === 0) {
+        vscode.window.showWarningMessage(`RailsForge: No schema found for "${modelName}" in db/schema.rb.`)
+        return
+      }
+
+      const lines = [
+        `# Schema: ${modelName}`,
+        '',
+        '| Column | Type | Nullable | Default |',
+        '| --- | --- | :---: | --- |',
+        ...columns.map(c => `| \`${c.name}\` | \`${c.type}\` | ${c.nullable ? '✓' : '✗'} | ${c.default ? `\`${c.default}\`` : '-'} |`),
+      ]
+      const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'markdown' })
+      await vscode.window.showTextDocument(doc, { preview: true })
     }),
     vscode.commands.registerCommand('railsforge.rubocopAutocorrect', async (uri?: vscode.Uri) => {
       const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri
@@ -1125,7 +1328,8 @@ function registerCommands(
       if (!name) {return}
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
       const freeVars = serviceExtractor.detectFreeVariables(selection)
-      const res = serviceExtractor.extractService(name, selection, freeVars, root)
+      const guidelines = loadEffectiveServiceObjectGuidelines(root, projectPatternIndexer)
+      const res = serviceExtractor.extractService(name, selection, freeVars, root, guidelines)
 
       // Single WorkspaceEdit so VS Code shows one multi-file diff preview: only the
       // selected range in the original file changes, plus the new service file — nothing
@@ -1145,6 +1349,21 @@ function registerCommands(
         vscode.window.showErrorMessage('RailsForge: Failed to apply Extract Service edit.')
         return
       }
+      const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
+      await vscode.window.showTextDocument(doc)
+    }),
+    vscode.commands.registerCommand('railsforge.generateServiceObject', async () => {
+      const name = await vscode.window.showInputBox({ prompt: 'Enter Service Object Name (e.g. ProcessOrder)' })
+      if (!name) {return}
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
+      const guidelines = loadEffectiveServiceObjectGuidelines(root, projectPatternIndexer)
+      const res = serviceExtractor.extractService(name, '# TODO: implement', [], root, guidelines)
+
+      if (fs.existsSync(res.serviceFilePath)) {
+        vscode.window.showErrorMessage(`RailsForge: ${path.relative(root, res.serviceFilePath)} already exists.`)
+        return
+      }
+      serviceExtractor.saveServiceFile(res.serviceFilePath, res.serviceCode)
       const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
       await vscode.window.showTextDocument(doc)
     }),
@@ -1215,7 +1434,239 @@ function registerCommands(
       term.show()
       term.sendText(`rdbg -n -c -- ${buildSingleTestCommand(uri, line, env)}`)
     }),
+    vscode.commands.registerCommand('railsforge.openDevDocs', () => {
+      const editor = vscode.window.activeTextEditor
+      const word = editor?.document.getWordRangeAtPosition(editor.selection.active)
+      const term = word ? editor?.document.getText(word) : undefined
+      const cfg = readConfig()
+      DevDocsPanel.createOrShow(cfg.devdocsBaseUrl, cfg.devdocsOpenBesideActiveEditor, term)
+    }),
+    vscode.commands.registerCommand('railsforge.openRubyDoc', async () => {
+      const cfg = readConfig()
+      const editor = vscode.window.activeTextEditor
+      const symbolRange = editor?.document.getWordRangeAtPosition(editor.selection.active, /[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*[#.][a-z_][A-Za-z0-9_!?]*|[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*/)
+      const selected = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : undefined
+      const symbol = (selected ?? (symbolRange ? editor!.document.getText(symbolRange) : undefined))?.trim()
+      if (!symbol) {
+        vscode.window.showWarningMessage('RailsForge: Place the cursor on (or select) a class/module name, e.g. "Pundit" or "Sidekiq::Client#push".')
+        return
+      }
+
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: Open a workspace folder to look up gem documentation.')
+        return
+      }
+      const lockPath = path.join(root, 'Gemfile.lock')
+      if (!fs.existsSync(lockPath)) {
+        vscode.window.showWarningMessage('RailsForge: No Gemfile.lock found — gem documentation needs an exact locked version.')
+        return
+      }
+      const lockedVersions = parseGemfileLock(fs.readFileSync(lockPath, 'utf8'))
+      const resolver = new GemSymbolResolver(lockedVersions, cfg.rubydocNamespaceMappings)
+
+      const [className, methodName] = symbol.split(/[#.]/, 2)
+      const resolved = resolver.resolve(className)
+      if (!resolved) {
+        vscode.window.showWarningMessage(`RailsForge: Could not determine which gem defines "${className}" — check it's in Gemfile.lock, or add a mapping via railsForge.rubydoc.namespaceMappings.`)
+        return
+      }
+
+      const classPath = className.replace(/::/g, '/')
+      const classUrl = `${cfg.rubydocBaseUrl.replace(/\/$/, '')}/gems/${encodeURIComponent(resolved.gem)}/${resolved.version}/${classPath}`
+
+      // "Class#method" / "Class.method" selections get an in-editor markdown preview
+      // (signature/params/return, from RubyDocProvider); a bare class name just opens
+      // the real page externally — the source of truth for a full class overview.
+      if (methodName) {
+        const entry = await rubyDocProvider.fetchMethod(resolved.gem, resolved.version, className, methodName)
+        if (entry) {
+          const doc = await vscode.workspace.openTextDocument({ content: formatRubyDocEntry(entry), language: 'markdown' })
+          await vscode.window.showTextDocument(doc, { preview: true })
+          return
+        }
+      }
+
+      await vscode.env.openExternal(vscode.Uri.parse(classUrl))
+    }),
+    vscode.commands.registerCommand('railsforge.updateDevDocs', async () => {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge: Downloading offline DevDocs data…' },
+        async () => {
+          const results = await refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, true)
+          if (results.every(Boolean)) {
+            vscode.window.showInformationMessage(`RailsForge: Offline DevDocs cache updated (${devDocsSlugs.join(', ')}).`)
+          } else {
+            vscode.window.showWarningMessage(`RailsForge: Could not download ${devDocsSlugs.filter((_, i) => !results[i]).join(', ')} — check your network connection. Previously cached data (if any) is unchanged.`)
+          }
+        },
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.runRakeTask', (taskName: string) => {
+      if (!taskName) {return}
+      const term = vscode.window.createTerminal('RailsForge Rake')
+      term.show()
+      term.sendText(`bundle exec rake ${shellQuote(taskName)}`)
+    }),
+    vscode.commands.registerCommand('railsforge.refreshRakeTasks', () => {
+      rakeTaskTreeProvider.refresh()
+    }),
+    vscode.commands.registerCommand('railsforge.openRailsConsole', () => {
+      const term = vscode.window.createTerminal('RailsForge Console')
+      term.show()
+      if (env.hasRails) {
+        term.sendText('bundle exec rails console')
+      } else if (env.hasPry) {
+        term.sendText('bundle exec pry')
+      } else {
+        term.sendText('bundle exec irb || irb')
+      }
+    }),
+    vscode.commands.registerCommand('railsforge.evaluateInREPL', () => {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) {
+        vscode.window.showWarningMessage('RailsForge: No active editor to evaluate a selection from.')
+        return
+      }
+      const code = editor.document.getText(editor.selection.isEmpty ? editor.document.lineAt(editor.selection.active.line).range : editor.selection)
+      if (!code.trim()) {return}
+
+      const term = vscode.window.activeTerminal ?? vscode.window.createTerminal('RailsForge Console')
+      term.show()
+      term.sendText(code, true)
+    }),
+    vscode.commands.registerCommand('railsforge.applyRubocopStyleGuide', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: Open a workspace folder first.')
+        return
+      }
+
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: '$(package) Shopify', description: 'rubocop-shopify', guide: 'shopify' as const },
+          { label: '$(package) GitLab', description: 'gitlab-styles', guide: 'gitlab' as const },
+          { label: '$(package) Airbnb', description: 'rubocop-airbnb', guide: 'airbnb' as const },
+        ],
+        { placeHolder: 'Apply a community RuboCop style guide' },
+      )
+      if (!choice) {return}
+
+      const result = applyStyleGuideToWorkspace(root, choice.guide)
+      const doc = await vscode.workspace.openTextDocument(path.join(root, '.rubocop.yml'))
+      await vscode.window.showTextDocument(doc)
+
+      const gemNote = result.gemAdded ? ' Run `bundle install` to pick up the new gem.' : ''
+      vscode.window.showInformationMessage(
+        result.ymlChanged || result.gemAdded
+          ? `RailsForge: Applied ${getStyleGuideApplication(choice.guide).label}.${gemNote}`
+          : `RailsForge: ${getStyleGuideApplication(choice.guide).label} was already applied — nothing changed.`,
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.runSteepCheck', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {return}
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge: Running Steep…' },
+        async () => {
+          const count = await updateSteepDiagnostics(steepProvider, steepDiagnostics, root)
+          if (count === 0) {
+            vscode.window.showInformationMessage('RailsForge: Steep found no type errors.')
+          } else {
+            vscode.window.showWarningMessage(`RailsForge: Steep found ${count} issue(s). See the Problems panel.`)
+          }
+        },
+      )
+    }),
+    vscode.commands.registerCommand('railsforge.generateRBS', async () => {
+      const editor = vscode.window.activeTextEditor
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!editor || !root) {
+        vscode.window.showWarningMessage('RailsForge: Open a Ruby file to generate RBS signatures for it.')
+        return
+      }
+      if (editor.document.languageId !== 'ruby') {
+        vscode.window.showWarningMessage('RailsForge: Not a Ruby file.')
+        return
+      }
+
+      const sigDir = readConfig().typesRbsSigDir
+      const outDir = path.join(root, sigDir)
+      const relativePath = path.relative(root, editor.document.fileName)
+
+      // `--base-dir=.` is not optional here: without it, `rbs prototype rb` silently
+      // strips the *first* path segment from the output location (verified: `lib/x.rb`
+      // -> `greeter.rbs`, `app/models/x.rb` -> `models/x.rbs`) rather than preserving the
+      // full relative path, which would make `generatedPath` below wrong.
+      const rbsArgs = ['prototype', 'rb', `--out-dir=${outDir}`, '--base-dir=.', relativePath]
+      try {
+        await execFileAsync('bundle', ['exec', 'rbs', ...rbsArgs], { cwd: root })
+      } catch {
+        try {
+          await execFileAsync('rbs', rbsArgs, { cwd: root })
+        } catch {
+          vscode.window.showErrorMessage('RailsForge: Could not run `rbs prototype rb` — is the rbs gem installed (bundle add rbs --group development)?')
+          return
+        }
+      }
+
+      rbsIndex.loadFromWorkspace(root, sigDir)
+      const generatedPath = path.join(outDir, `${relativePath.replace(/\.rb$/, '')}.rbs`)
+      if (fs.existsSync(generatedPath)) {
+        const doc = await vscode.workspace.openTextDocument(generatedPath)
+        await vscode.window.showTextDocument(doc)
+      }
+      vscode.window.showInformationMessage(`RailsForge: Generated RBS prototype for ${relativePath} in ${sigDir}/.`)
+    }),
+    vscode.commands.registerCommand('railsforge.showLearningResource', (resource: LearningResource) => {
+      vscode.window.showInformationMessage(`📚 ${resource.book}\n${resource.chapter}`, { modal: true, detail: resource.note })
+    }),
   )
+}
+
+function applyStyleGuideToWorkspace(root: string, guide: RuboCopStyleGuideId): { gemAdded: boolean; ymlChanged: boolean } {
+  const app = getStyleGuideApplication(guide)
+
+  const gemfilePath = path.join(root, 'Gemfile')
+  const gemfileContent = fs.existsSync(gemfilePath) ? fs.readFileSync(gemfilePath, 'utf8') : ''
+  const gemResult = ensureGemInGemfile(gemfileContent, app.gemName)
+  if (gemResult.changed) {fs.writeFileSync(gemfilePath, gemResult.content, 'utf8')}
+
+  if (app.extraFile) {
+    const extraPath = path.join(root, app.extraFile.name)
+    if (!fs.existsSync(extraPath)) {fs.writeFileSync(extraPath, app.extraFile.content, 'utf8')}
+  }
+
+  const rubocopYmlPath = path.join(root, '.rubocop.yml')
+  const rubocopYmlContent = fs.existsSync(rubocopYmlPath) ? fs.readFileSync(rubocopYmlPath, 'utf8') : ''
+  const ymlResult = app.inheritFromEntry
+    ? applyAirbnbInheritFrom(rubocopYmlContent, app.inheritFromEntry)
+    : applyInheritGemBlock(rubocopYmlContent, app.rubocopYmlBlock ?? '', app.alreadyAppliedMarker)
+  if (ymlResult.changed) {fs.writeFileSync(rubocopYmlPath, ymlResult.content, 'utf8')}
+
+  return { gemAdded: gemResult.changed, ymlChanged: ymlResult.changed }
+}
+
+function formatRubyDocEntry(entry: RubyDocEntry): string {
+  const lines = [
+    `# ${entry.className}${entry.signature ? `#${entry.signature}` : `#${entry.methodName}`}`,
+    '',
+    `*${entry.gem} v${entry.version} (rubydoc.info)*`,
+    '',
+  ]
+  if (entry.description) {lines.push(entry.description, '')}
+  if (entry.params.length > 0) {
+    lines.push('**Parameters:**', '')
+    for (const p of entry.params) {
+      lines.push(`- \`${p.name}\`${p.type ? ` *(${p.type})*` : ''}${p.description ? ` — ${p.description}` : ''}`)
+    }
+    lines.push('')
+  }
+  if (entry.returnType) {lines.push(`**Returns:** *(${entry.returnType})*`, '')}
+  if (entry.sourceLocation) {lines.push(`**Source:** \`${entry.sourceLocation}\``, '')}
+  lines.push(`[Open full docs](${entry.url})`)
+  return lines.join('\n')
 }
 
 /**
@@ -1264,6 +1715,37 @@ function navigateCompanion(mvc: MVCNavigator, targetType: string): void {
   } else {
     vscode.window.showWarningMessage(`Companion ${targetType} not found at ${targetPath}`)
   }
+}
+
+/**
+ * Unlike model/controller/spec, "the" view isn't a single companion file —
+ * `getCompanionPaths` only resolves a `viewDir` (a directory can hold index/show/new/edit/
+ * etc. templates), so this lists what's actually in it rather than guessing one path via
+ * `navigateCompanion`'s single-file lookup, which is why `railsforge.goToView` needs its
+ * own handler.
+ */
+async function navigateToView(mvc: MVCNavigator): Promise<void> {
+  const editor = vscode.window.activeTextEditor
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  if (!editor || !root) {return}
+
+  const viewDir = mvc.getCompanionPaths(editor.document.fileName, root).viewDir
+  if (!viewDir || !fs.existsSync(viewDir)) {
+    vscode.window.showWarningMessage(`RailsForge: No view directory found${viewDir ? ` at ${viewDir}` : ''}.`)
+    return
+  }
+
+  const templates = fs.readdirSync(viewDir).filter(f => /\.(erb|haml|slim|builder|jbuilder)$/.test(f)).sort()
+  if (templates.length === 0) {
+    vscode.window.showWarningMessage(`RailsForge: No view templates found in ${viewDir}.`)
+    return
+  }
+
+  const chosen = templates.length === 1 ? templates[0] : await vscode.window.showQuickPick(templates, { placeHolder: `Select a view in ${path.basename(viewDir)}/` })
+  if (!chosen) {return}
+
+  const doc = await vscode.workspace.openTextDocument(path.join(viewDir, chosen))
+  await vscode.window.showTextDocument(doc)
 }
 
 export function deactivate(): void {

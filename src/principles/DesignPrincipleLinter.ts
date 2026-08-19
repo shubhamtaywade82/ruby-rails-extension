@@ -3,6 +3,7 @@
  */
 
 import * as vscode from 'vscode'
+import { getLearningResource } from './LearningResources'
 
 export interface PrincipleDiagnostic {
   id: string
@@ -259,6 +260,17 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
         arguments: [document.uri, diag.range, diag.message],
       }
       actions.push(aiAction)
+
+      const resource = typeof diag.code === 'string' ? getLearningResource(diag.code) : null
+      if (resource) {
+        const learnAction = new vscode.CodeAction(`📚 Learn: ${resource.book} — ${resource.chapter}`, vscode.CodeActionKind.Empty)
+        learnAction.command = {
+          command: 'railsforge.showLearningResource',
+          title: 'Show Learning Resource',
+          arguments: [resource],
+        }
+        actions.push(learnAction)
+      }
     }
 
     return actions

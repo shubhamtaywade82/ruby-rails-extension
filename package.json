@@ -2,7 +2,7 @@
   "name": "railsforge",
   "displayName": "RailsForge - Supercharged Ruby & Rails IDE",
   "description": "All-in-one Ruby on Rails intelligence: Schema Peek, Fast MVC Navigation, Route Autocomplete, RuboCop Autocorrect, Brakeman Security, Service Object Extractors, and @rails AI Agent.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "ShubhamTaywade",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -209,7 +209,161 @@
           "type": "number",
           "default": 200,
           "minimum": 10,
-          "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings) before evicting the least-recently-used entry."
+          "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings, APIDock notes) before evicting the least-recently-used entry."
+        },
+        "railsForge.apidock.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append apidock.com's top-rated community note (real-world gotchas/edge cases) to the hover tooltip for known Rails/Ruby/RSpec methods."
+        },
+        "railsForge.apidock.baseUrl": {
+          "type": "string",
+          "default": "https://apidock.com",
+          "description": "Base URL used for apidock.com lookups. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.apidock.requestTimeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 500,
+          "description": "Timeout for an apidock.com hover lookup, in milliseconds. A timed-out or failed request degrades to no APIDock note rather than blocking the hover."
+        },
+        "railsForge.apidock.cacheTtlHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "description": "How long a fetched APIDock note is cached before being re-fetched, in hours."
+        },
+        "railsForge.apidock.customMappings": {
+          "type": "array",
+          "default": [],
+          "description": "Extra (or overriding) entries for the hovered-word → apidock.com Class/method lookup used by the APIDock hover note. Each entry overrides any built-in mapping with the same keyword.",
+          "items": {
+            "type": "object",
+            "required": [
+              "keyword",
+              "namespace",
+              "className",
+              "methodName"
+            ],
+            "properties": {
+              "keyword": {
+                "type": "string",
+                "description": "The bare word to match when hovering, e.g. \"has_many\""
+              },
+              "namespace": {
+                "type": "string",
+                "enum": [
+                  "rails",
+                  "ruby",
+                  "rspec"
+                ],
+                "description": "apidock.com top-level namespace"
+              },
+              "className": {
+                "type": "string",
+                "description": "apidock.com class/module path, slash-separated for nested modules, e.g. \"ActiveRecord/Base\""
+              },
+              "methodName": {
+                "type": "string",
+                "description": "Method name as it appears in the apidock.com URL"
+              }
+            }
+          }
+        },
+        "railsForge.devdocs.baseUrl": {
+          "type": "string",
+          "default": "https://devdocs.io",
+          "description": "Base URL loaded by 'RailsForge: Open DevDocs'. Override to point at a self-hosted DevDocs instance."
+        },
+        "railsForge.devdocs.openBesideActiveEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the DevDocs panel in a column beside the active editor. When false, it opens in the active editor's own column."
+        },
+        "railsForge.rubydoc.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether 'RailsForge: Open Gem Documentation' and the get_gem_documentation MCP tool are available."
+        },
+        "railsForge.rubydoc.baseUrl": {
+          "type": "string",
+          "default": "https://www.rubydoc.info",
+          "description": "Base URL used for rubydoc.info gem documentation lookups. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.rubydoc.requestTimeoutMs": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 500,
+          "description": "Timeout for a rubydoc.info lookup, in milliseconds."
+        },
+        "railsForge.rubydoc.cacheTtlDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 0,
+          "description": "How long a fetched gem doc entry is cached before being re-fetched, in days. Gem docs are immutable per version, so this can safely be long."
+        },
+        "railsForge.devdocs.offlineEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Download the project's Ruby/Rails DevDocs docsets to .railsforge/devdocs/ on activation and use them for zero-latency, fully offline hover documentation. When false, only APIDock's network-backed community notes appear on hover."
+        },
+        "railsForge.devdocs.dataBaseUrl": {
+          "type": "string",
+          "default": "https://documents.devdocs.io",
+          "description": "Base URL DevDocs docset data (index.json/db.json) is downloaded from. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.devdocs.fetchTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "description": "Timeout for downloading a DevDocs docset file, in milliseconds. Each docset is several MB, hence the longer default than APIDock/RubyDoc's per-hover timeouts."
+        },
+        "railsForge.devdocs.rubySlug": {
+          "type": "string",
+          "default": "",
+          "description": "DevDocs docset slug to use for offline Ruby core docs, e.g. \"ruby~3.3\". Empty: derived from the project's detected Ruby version."
+        },
+        "railsForge.devdocs.railsSlug": {
+          "type": "string",
+          "default": "",
+          "description": "DevDocs docset slug to use for offline Rails docs, e.g. \"rails~7.1\". Empty: derived from the project's detected Rails version."
+        },
+        "railsForge.rubydoc.namespaceMappings": {
+          "type": "array",
+          "default": [],
+          "description": "Extra (or overriding) entries for the constant-namespace → gem-name lookup used to resolve 'RailsForge: Open Gem Documentation' and get_gem_documentation. Only needed for a gem whose top-level module doesn't match its snake_cased or lowercased gem name.",
+          "items": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "gem"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "description": "Top-level Ruby constant, e.g. \"ViewComponent\""
+              },
+              "gem": {
+                "type": "string",
+                "description": "Gem name as it appears in Gemfile.lock, e.g. \"view_component\""
+              }
+            }
+          }
+        },
+        "railsForge.types.steepEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Steep type-checker diagnostics ('RailsForge: Run Steep Type Check'). Requires a Steepfile and the steep gem; off by default since most projects don't use RBS/Steep."
+        },
+        "railsForge.types.steepScanOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically re-run Steep in the background on Ruby file save when railsForge.types.steepEnabled is true. Debounced (like brakeman.scanOnSave) since Steep checks the whole configured target, not just the saved file."
+        },
+        "railsForge.types.rbsSigDir": {
+          "type": "string",
+          "default": "sig",
+          "description": "Directory (relative to the workspace root) RBS signature files are read from for hover/go-to-definition, and written to by 'RailsForge: Generate RBS Signatures for File'."
         }
       }
     },
@@ -275,6 +429,11 @@
         {
           "id": "railsforge.patternCatalogView",
           "name": "Design Patterns (Refactoring Guru)"
+        },
+        {
+          "id": "railsforge.rakeTasksView",
+          "name": "Rake Tasks",
+          "when": "railsforge.hasRakefile"
         }
       ]
     },
@@ -415,8 +574,59 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.generateServiceObject",
+        "title": "RailsForge: Generate New Service Object",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.showSchemaPeek",
         "title": "RailsForge: Peek Model Schema",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.openDevDocs",
+        "title": "RailsForge: Open DevDocs",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.openRubyDoc",
+        "title": "RailsForge: Open Gem Documentation",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.updateDevDocs",
+        "title": "RailsForge: Update Offline DevDocs Cache",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.refreshRakeTasks",
+        "title": "RailsForge: Refresh Rake Tasks",
+        "category": "RailsForge",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "railsforge.openRailsConsole",
+        "title": "RailsForge: Open Console (Pry/IRB/Rails)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.evaluateInREPL",
+        "title": "RailsForge: Evaluate Selection in REPL",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.applyRubocopStyleGuide",
+        "title": "RailsForge: Apply Community RuboCop Style Guide (Shopify/GitLab/Airbnb)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.runSteepCheck",
+        "title": "RailsForge: Run Steep Type Check",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.generateRBS",
+        "title": "RailsForge: Generate RBS Signatures for File",
         "category": "RailsForge"
       }
     ],
@@ -471,12 +681,43 @@
           "when": "railsforge.isRailsApp"
         },
         {
+          "command": "railsforge.generateServiceObject",
+          "when": "railsforge.isRailsApp"
+        },
+        {
           "command": "railsforge.goToPolicy",
           "when": "railsforge.hasPundit"
         },
         {
           "command": "railsforge.goToComponent",
           "when": "railsforge.hasViewComponent"
+        },
+        {
+          "command": "railsforge.refreshRakeTasks",
+          "when": "railsforge.hasRakefile"
+        },
+        {
+          "command": "railsforge.openRailsConsole",
+          "when": "railsforge.projectType != 'script'"
+        },
+        {
+          "command": "railsforge.applyRubocopStyleGuide",
+          "when": "railsforge.projectType != 'script'"
+        },
+        {
+          "command": "railsforge.runSteepCheck",
+          "when": "railsforge.typesSteepEnabled"
+        },
+        {
+          "command": "railsforge.generateRBS",
+          "when": "railsforge.projectType != 'script'"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "railsforge.refreshRakeTasks",
+          "when": "view == railsforge.rakeTasksView",
+          "group": "navigation"
         }
       ]
     },
@@ -510,6 +751,18 @@
         "key": "alt+r r",
         "mac": "cmd+alt+r r",
         "when": "railsforge.isRailsApp"
+      },
+      {
+        "command": "railsforge.openDevDocs",
+        "key": "alt+r d",
+        "mac": "cmd+alt+r d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.evaluateInREPL",
+        "key": "alt+r e",
+        "mac": "cmd+alt+r e",
+        "when": "editorTextFocus"
       }
     ]
   },
@@ -530,6 +783,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^13.0.3",
+    "js-yaml": "^5.3.0",
     "tree-sitter": "^0.21.1",
     "tree-sitter-ruby": "^0.23.1",
     "zod": "^4.4.3"

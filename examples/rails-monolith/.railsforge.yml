@@ -1,0 +1,12 @@
+version: 1
+patterns:
+  service_objects:
+    directory: app/services
+    base_class: ApplicationService
+    naming_convention: suffix_service
+  query_objects:
+    directory: app/queries
+    naming_convention: suffix_query
+  policies:
+    directory: app/policies
+    base_class: ApplicationPolicy

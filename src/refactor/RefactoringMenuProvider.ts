@@ -7,6 +7,8 @@ import { ServiceExtractor } from './ServiceExtractor'
 import { QueryExtractor } from './QueryExtractor'
 import { FormObjectExtractor } from './FormObjectExtractor'
 import { ValueObjectExtractor } from './ValueObjectExtractor'
+import { ProjectPatternIndexer } from '../patterns/ProjectPatternIndexer'
+import { loadEffectiveServiceObjectGuidelines } from '../config/EffectiveGuidelines'
 
 export class RefactoringMenuProvider {
   constructor(
@@ -14,6 +16,7 @@ export class RefactoringMenuProvider {
     private queryExtractor: QueryExtractor,
     private formExtractor: FormObjectExtractor,
     private valueExtractor: ValueObjectExtractor,
+    private projectPatternIndexer: ProjectPatternIndexer,
   ) {}
 
   async promptRefactoring(): Promise<void> {
@@ -86,7 +89,8 @@ export class RefactoringMenuProvider {
     if (!name) {return}
 
     const freeVars = this.serviceExtractor.detectFreeVariables(selectedText)
-    const result = this.serviceExtractor.extractService(name, selectedText, freeVars, root)
+    const guidelines = loadEffectiveServiceObjectGuidelines(root, this.projectPatternIndexer)
+    const result = this.serviceExtractor.extractService(name, selectedText, freeVars, root, guidelines)
     this.serviceExtractor.saveServiceFile(result.serviceFilePath, result.serviceCode)
     const doc = await vscode.workspace.openTextDocument(result.serviceFilePath)
     await vscode.window.showTextDocument(doc)
