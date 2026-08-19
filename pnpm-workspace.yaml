@@ -9,4 +9,7 @@ allowBuilds:
   tree-sitter: true
   tree-sitter-ruby: true
 
+minimumReleaseAgeExclude:
+  - '@nemesis-oss/ollama-sdk@1.0.0'
+
 verifyDepsBeforeRun: false

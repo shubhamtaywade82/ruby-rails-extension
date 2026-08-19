@@ -22,7 +22,7 @@ describe('RailsAgent provider dispatch', () => {
     vi.unstubAllGlobals()
   })
 
-  it('calls the Ollama OpenAI-compatible endpoint by default, with no Authorization header, and parses a real recorded response', async () => {
+  it('calls Ollama via @nemesis-oss/ollama-sdk by default, with no Authorization header, and parses a real recorded response', async () => {
     // rails-agent-ollama-chat.json was recorded from a genuine LLM call (see
     // test/cassettes/record.mjs) — this validates RailsAgent's response parsing
     // against an actual Ollama-compatible chat-completion payload, not a hand-typed guess.
@@ -38,7 +38,7 @@ describe('RailsAgent provider dispatch', () => {
     expect(result.response.toLowerCase()).toContain('database')
 
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://localhost:11434/v1/chat/completions')
+    expect(url).toBe('http://localhost:11434/api/chat')
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined()
   })
 
@@ -144,4 +144,25 @@ describe('RailsAgent provider dispatch', () => {
       expect(prompt).toContain('Never close, disconnect, or otherwise release an object this snippet did not itself create')
     },
   )
+
+  it('suggestCodeFix accepts module header documentation fixes without triggering the safety guard', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: {
+          content: '# Top-level documentation for StringUtils\nmodule MyToolbox::StringUtils',
+        },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    const fix = await agent.suggestCodeFix(
+      'module MyToolbox::StringUtils',
+      'Style/Documentation: Missing top-level documentation comment for `module MyToolbox::StringUtils`.',
+      { fileContent: 'module MyToolbox::StringUtils\n  def self.slug(s)\n    s.downcase\n  end\nend' },
+    )
+
+    expect(fix).toBe('# Top-level documentation for StringUtils\nmodule MyToolbox::StringUtils')
+  })
 })

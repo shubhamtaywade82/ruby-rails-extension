@@ -253,7 +253,7 @@ export class DesignPrincipleLinter implements vscode.CodeActionProvider {
         actions.push(removeAction)
       }
 
-      const aiAction = new vscode.CodeAction(`✨ AI: Suggest fix — ${meta?.title ?? diag.code}`, vscode.CodeActionKind.QuickFix)
+      const aiAction = new vscode.CodeAction(`✨ RailsForge AI: Fix ${meta?.title ?? diag.code}`, vscode.CodeActionKind.QuickFix)
       aiAction.command = {
         command: 'railsforge.applyAiFix',
         title: 'Apply AI Fix',

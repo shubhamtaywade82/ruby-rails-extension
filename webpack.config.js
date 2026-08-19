@@ -64,6 +64,7 @@ module.exports = {
     'better-sqlite3': 'commonjs better-sqlite3',
     'tree-sitter': 'commonjs tree-sitter',
     'tree-sitter-ruby': 'commonjs tree-sitter-ruby',
+    '@opentelemetry/api': 'commonjs @opentelemetry/api',
   },
   resolve: {
     extensions: ['.ts', '.js'],

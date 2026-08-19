@@ -90,6 +90,14 @@ export class RailsDeprecationLinter implements vscode.CodeActionProvider {
         fix.edit.replace(document.uri, diag.range, updated)
         actions.push(fix)
       }
+
+      const aiAction = new vscode.CodeAction(`✨ RailsForge AI: Fix deprecation (${diag.code})`, vscode.CodeActionKind.QuickFix)
+      aiAction.command = {
+        command: 'railsforge.applyAiFix',
+        title: 'Apply AI Fix',
+        arguments: [document.uri, diag.range, diag.message],
+      }
+      actions.push(aiAction)
     }
 
     return actions

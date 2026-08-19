@@ -11,6 +11,10 @@
       "created": 1787025724,
       "model": "gpt-oss:20b",
       "system_fingerprint": "fp_ollama",
+      "message": {
+        "role": "assistant",
+        "content": "It validates the model and then inserts a new row or updates an existing one in the database, returning `true` if the operation succeeds."
+      },
       "choices": [
         {
           "index": 0,

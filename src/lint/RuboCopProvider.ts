@@ -110,6 +110,17 @@ export class RuboCopProvider implements vscode.CodeActionProvider {
       if (diag.source !== 'RuboCop' || !diag.code) {continue}
       const copName = String(diag.code)
 
+      const aiAction = new vscode.CodeAction(
+        `✨ RailsForge AI: Fix ${copName}`,
+        vscode.CodeActionKind.QuickFix,
+      )
+      aiAction.command = {
+        command: 'railsforge.applyAiFix',
+        title: 'Apply AI Fix',
+        arguments: [document.uri, diag.range, diag.message],
+      }
+      actions.push(aiAction)
+
       const disableLine = new vscode.CodeAction(
         `Disable ${copName} for this line`,
         vscode.CodeActionKind.QuickFix,

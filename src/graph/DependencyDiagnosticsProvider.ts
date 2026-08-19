@@ -64,6 +64,14 @@ export class DependencyDiagnosticsProvider implements vscode.CodeActionProvider 
         actions.push(action)
       }
 
+      const aiAction = new vscode.CodeAction(`✨ RailsForge AI: Fix collaborator '${collaborator}'`, vscode.CodeActionKind.QuickFix)
+      aiAction.command = {
+        command: 'railsforge.applyAiFix',
+        title: 'Apply AI Fix',
+        arguments: [document.uri, diag.range, diag.message],
+      }
+      actions.push(aiAction)
+
       actions.push(this.askRailsAction(diag))
     }
 

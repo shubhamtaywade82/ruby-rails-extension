@@ -7,6 +7,8 @@ import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { ProjectEnvironment } from '../environment/EnvironmentDetector'
 import { ProjectPatternIndexer } from '../patterns/ProjectPatternIndexer'
 
+import { OllamaClient } from '@nemesis-oss/ollama-sdk'
+
 /** Duplicated (not imported) from config/RailsForgeConfig on purpose — this class stays vscode-free. */
 export type AiAgentProvider = 'ollama' | 'openai' | 'anthropic'
 
@@ -77,14 +79,24 @@ export class RailsAgent {
       )
     }
 
-    return this.callOpenAiCompatible(
-      `${this.config.ollamaHost.replace(/\/$/, '')}/v1/chat/completions`,
-      this.config.model,
-      systemPrompt,
-      prompt,
-      undefined,
-      `local Ollama at ${this.config.ollamaHost}`,
-    )
+    return this.callOllama(systemPrompt, prompt)
+  }
+
+  private async callOllama(systemPrompt: string, prompt: string): Promise<{ success: boolean; response: string }> {
+    try {
+      const client = new OllamaClient({ baseUrl: this.config.ollamaHost })
+      const text = await client.chatText({
+        model: this.config.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt },
+        ],
+        options: { temperature: 0.2 },
+      })
+      return { success: true, response: text }
+    } catch (err) {
+      return { success: false, response: `Failed to connect to local Ollama at ${this.config.ollamaHost}: ${String(err)}` }
+    }
   }
 
   private missingApiKeyResult(providerLabel: string): { success: false; response: string } {
@@ -172,7 +184,7 @@ export class RailsAgent {
    * so callers can show a clean "AI fix unavailable" message instead of a stack trace.
    */
   async suggestCodeFix(code: string, diagnosticMessage: string, context: RailsAgentContext): Promise<string | null> {
-    const isFullFile = code.trim().startsWith('# frozen_string_literal') || /^class\s+[A-Z]/.test(code.trim())
+    const isHeaderOrFull = code.trim().startsWith('# frozen_string_literal') || /^(class|module)\s+[A-Z]/.test(code.trim())
     const instruction = [
       `Fix the following Ruby snippet so it no longer triggers this issue: "${diagnosticMessage}".`,
       'Replace ONLY the targeted snippet. Do NOT output the entire file, class, or module.',
@@ -195,7 +207,8 @@ export class RailsAgent {
     if (!cleaned) {return null}
 
     // Safety guard: reject hallucinated full-file rewrites when replacing a single snippet
-    if (!isFullFile && (/^#\s*frozen_string_literal/m.test(cleaned) || /^module\s+[A-Z]/m.test(cleaned))) {
+    const hadModule = /^\s*module\s+[A-Z]/m.test(code)
+    if (!isHeaderOrFull && (/^#\s*frozen_string_literal/m.test(cleaned) || (!hadModule && /^module\s+[A-Z]/m.test(cleaned)))) {
       return null
     }
 
@@ -213,9 +226,9 @@ export class RailsAgent {
     }
 
     try {
-      const url = `${this.config.ollamaHost.replace(/\/$/, '')}/api/tags`
-      const res = await fetch(url, { method: 'GET' })
-      return res.ok
+      const client = new OllamaClient({ baseUrl: this.config.ollamaHost })
+      const checks = await client.healthCheck()
+      return checks.some(c => c.reachable)
     } catch {
       return false
     }

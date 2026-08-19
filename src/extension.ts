@@ -1066,8 +1066,9 @@ function registerCommands(
     }),
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
       const document = await vscode.workspace.openTextDocument(uri)
-      const code = document.getText(range)
-      Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${range.start.line + 1}`)
+      const targetRange = range.isEmpty ? document.lineAt(range.start.line).range : range
+      const code = document.getText(targetRange)
+      Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${targetRange.start.line + 1}`)
 
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
@@ -1081,15 +1082,36 @@ function registerCommands(
 
           if (!fixed) {
             Logger.warn(`[AI Fix] Fix unavailable for: "${diagnosticMessage}"`)
-            vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running).')
+            vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running or AI provider key is set).')
             return
           }
 
-          Logger.info(`[AI Fix] Applying fix to ${vscode.workspace.asRelativePath(uri)}:${range.start.line + 1}`)
           const edit = new vscode.WorkspaceEdit()
-          edit.replace(uri, range, fixed)
-          await vscode.workspace.applyEdit(edit)
-          vscode.window.showInformationMessage('RailsForge: AI fix applied.')
+          edit.replace(uri, targetRange, fixed)
+          const applied = await vscode.workspace.applyEdit(edit)
+          if (!applied) {return}
+
+          const editor = vscode.window.activeTextEditor?.document.uri.toString() === uri.toString()
+            ? vscode.window.activeTextEditor
+            : await vscode.window.showTextDocument(document)
+
+          const lines = fixed.split('\n')
+          const endLine = targetRange.start.line + lines.length - 1
+          const endChar = lines.length === 1 ? targetRange.start.character + lines[0].length : lines[lines.length - 1].length
+          const appliedRange = new vscode.Range(targetRange.start, new vscode.Position(endLine, endChar))
+          editor.selection = new vscode.Selection(appliedRange.start, appliedRange.end)
+          editor.revealRange(appliedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
+
+          const choice = await vscode.window.showInformationMessage(
+            `RailsForge AI: Fix applied for "${diagnosticMessage}". Accept or discard?`,
+            'Accept Fix',
+            'Discard Fix',
+          )
+
+          if (choice === 'Discard Fix') {
+            await vscode.commands.executeCommand('undo')
+            vscode.window.showInformationMessage('RailsForge: AI fix discarded.')
+          }
         },
       )
     }),
