@@ -118,4 +118,30 @@ describe('RailsAgent provider dispatch', () => {
     expect(await withoutKey.healthCheck()).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it(
+    'suggestCodeFix tells the model to stay consistent with sibling methods and never close a caller-owned resource',
+    async () => {
+      // Regression test: applying the AI fix to two methods that share a resource (e.g. two
+      // methods each opening a Redis connection) independently, one at a time, previously
+      // produced inconsistent fixes — one method gained an injectable `@redis` seam, the
+      // other didn't, and the seam's own fix closed `@redis` even when it might be
+      // caller-supplied. Both failure modes trace back to instructions missing from the
+      // prompt below, not model flakiness — this locks the instructions in place.
+      const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const agent = buildAgent({})
+      await agent.suggestCodeFix('def foo\n  1\nend', 'Method too short', {
+        fileContent: 'class Foo\n  def foo\n    1\n  end\nend',
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      const prompt = (JSON.parse(init.body as string).messages as Array<{ role: string; content: string }>)
+        .find(m => m.role === 'user')?.content
+
+      expect(prompt).toContain('sibling method')
+      expect(prompt).toContain('Never close, disconnect, or otherwise release an object this snippet did not itself create')
+    },
+  )
 })
