@@ -66,6 +66,11 @@ export interface RailsForgeConfig {
   rubydocRequestTimeoutMs: number
   rubydocCacheTtlDays: number
   rubydocNamespaceMappings: GemNamespaceMapping[]
+  devdocsOfflineEnabled: boolean
+  devdocsDataBaseUrl: string
+  devdocsFetchTimeoutMs: number
+  devdocsRubySlug: string
+  devdocsRailsSlug: string
 }
 
 export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig {
@@ -101,6 +106,11 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     rubydocRequestTimeoutMs: cfg.get<number>('rubydoc.requestTimeoutMs', 6000),
     rubydocCacheTtlDays: cfg.get<number>('rubydoc.cacheTtlDays', 7),
     rubydocNamespaceMappings: sanitizeGemNamespaceMappings(cfg.get<unknown>('rubydoc.namespaceMappings', [])),
+    devdocsOfflineEnabled: cfg.get<boolean>('devdocs.offlineEnabled', true),
+    devdocsDataBaseUrl: cfg.get<string>('devdocs.dataBaseUrl', 'https://documents.devdocs.io'),
+    devdocsFetchTimeoutMs: cfg.get<number>('devdocs.fetchTimeoutMs', 30000),
+    devdocsRubySlug: cfg.get<string>('devdocs.rubySlug', ''),
+    devdocsRailsSlug: cfg.get<string>('devdocs.railsSlug', ''),
   }
 }
 

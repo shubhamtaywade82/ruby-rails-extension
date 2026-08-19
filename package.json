@@ -302,6 +302,32 @@
           "minimum": 0,
           "description": "How long a fetched gem doc entry is cached before being re-fetched, in days. Gem docs are immutable per version, so this can safely be long."
         },
+        "railsForge.devdocs.offlineEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Download the project's Ruby/Rails DevDocs docsets to .railsforge/devdocs/ on activation and use them for zero-latency, fully offline hover documentation. When false, only APIDock's network-backed community notes appear on hover."
+        },
+        "railsForge.devdocs.dataBaseUrl": {
+          "type": "string",
+          "default": "https://documents.devdocs.io",
+          "description": "Base URL DevDocs docset data (index.json/db.json) is downloaded from. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.devdocs.fetchTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "description": "Timeout for downloading a DevDocs docset file, in milliseconds. Each docset is several MB, hence the longer default than APIDock/RubyDoc's per-hover timeouts."
+        },
+        "railsForge.devdocs.rubySlug": {
+          "type": "string",
+          "default": "",
+          "description": "DevDocs docset slug to use for offline Ruby core docs, e.g. \"ruby~3.3\". Empty: derived from the project's detected Ruby version."
+        },
+        "railsForge.devdocs.railsSlug": {
+          "type": "string",
+          "default": "",
+          "description": "DevDocs docset slug to use for offline Rails docs, e.g. \"rails~7.1\". Empty: derived from the project's detected Rails version."
+        },
         "railsForge.rubydoc.namespaceMappings": {
           "type": "array",
           "default": [],
@@ -540,6 +566,11 @@
       {
         "command": "railsforge.openRubyDoc",
         "title": "RailsForge: Open Gem Documentation",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.updateDevDocs",
+        "title": "RailsForge: Update Offline DevDocs Cache",
         "category": "RailsForge"
       }
     ],

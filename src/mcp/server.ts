@@ -29,6 +29,7 @@ import { ApiDockMethodIndex } from '../docs/ApiDockMethodIndex'
 import { RubyDocProvider } from '../docs/RubyDocProvider'
 import { GemSymbolResolver } from '../docs/GemSymbolResolver'
 import { parseGemfileLock } from '../gems/GemfileLockParser'
+import { DevDocsOfflineIndex } from '../docs/DevDocsOfflineIndex'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -325,6 +326,46 @@ server.registerTool(
       return { content: [{ type: 'text', text: `No rubydoc.info documentation found for ${gem}@${resolvedVersion} ${class_name}#${method_name}.` }] }
     }
     return { content: [{ type: 'text', text: JSON.stringify(entry, null, 2) }] }
+  },
+)
+
+let devDocsIndex: DevDocsOfflineIndex | null = null
+
+/**
+ * Built once per server process (not per call): DevDocsOfflineIndex lazily parses each
+ * docset's ~10-15MB db.json on first lookup and keeps it in memory, so reusing one
+ * instance across tool calls is what makes repeat lookups actually instant instead of
+ * re-parsing that JSON every time.
+ */
+function getDevDocsIndex(): DevDocsOfflineIndex {
+  if (devDocsIndex) {return devDocsIndex}
+
+  const cacheDir = path.join(workspaceRoot, '.railsforge', 'devdocs')
+  let slugs: string[] = []
+  try {
+    slugs = fs.readdirSync(cacheDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
+  } catch {
+    slugs = []
+  }
+  devDocsIndex = new DevDocsOfflineIndex(cacheDir, slugs)
+  return devDocsIndex
+}
+
+server.registerTool(
+  'get_offline_docs',
+  {
+    title: 'Get offline DevDocs documentation',
+    description: 'Looks up a Ruby/Rails method or class in this project\'s locally cached DevDocs data (.railsforge/devdocs/, downloaded by the extension on activation) — instant, no network call, no tokens spent fetching a web page. Prefer this over get_method_notes/get_gem_documentation when you just need the official signature/description for a Ruby core or Rails framework method; use those for community gotchas or gem-specific (non-Rails) APIs instead.',
+    inputSchema: {
+      symbol_name: z.string().describe('Bare method name (e.g. "update_attribute") or class/module name (e.g. "ActiveRecord::Base")'),
+    },
+  },
+  async ({ symbol_name }) => {
+    const result = getDevDocsIndex().lookup(symbol_name)
+    if (!result) {
+      return { content: [{ type: 'text', text: `No offline DevDocs entry found for "${symbol_name}". Either it isn't cached yet (open this workspace in VS Code with RailsForge, or run "RailsForge: Update Offline DevDocs Cache"), or it doesn't exist in the cached docset(s).` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
   },
 )
 

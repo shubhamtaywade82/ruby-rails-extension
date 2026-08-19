@@ -68,6 +68,9 @@ import { DevDocsPanel } from './docs/DevDocsPanel'
 import { RubyDocProvider, RubyDocEntry } from './docs/RubyDocProvider'
 import { GemSymbolResolver } from './docs/GemSymbolResolver'
 import { parseGemfileLock } from './gems/GemfileLockParser'
+import { DevDocsFetcher, toDevDocsSlug } from './docs/DevDocsFetcher'
+import { DevDocsOfflineIndex } from './docs/DevDocsOfflineIndex'
+import { DevDocsHoverProvider } from './docs/DevDocsHoverProvider'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 import { Logger } from './util/Logger'
 
@@ -132,6 +135,24 @@ export function activate(context: vscode.ExtensionContext): void {
     env.projectType = config.projectTypeOverride
   }
 
+  // Offline DevDocs cache: workspace-local (not globalStorageUri) so the standalone MCP
+  // server can find it too — same rationale as PersistentIndexManager's .railsforge/index.sqlite3.
+  const devDocsCacheDir = path.join(workspaceRoot, '.railsforge', 'devdocs')
+  const devDocsFetcher = new DevDocsFetcher({
+    cacheDir: devDocsCacheDir,
+    timeoutMs: config.devdocsFetchTimeoutMs,
+    baseUrl: config.devdocsDataBaseUrl,
+  })
+  const devDocsSlugs = [config.devdocsRubySlug || toDevDocsSlug('ruby', env.rubyVersion)]
+  if (env.hasRails) {
+    devDocsSlugs.push(config.devdocsRailsSlug || toDevDocsSlug('rails', env.railsVersion))
+  }
+  // Empty until the background download (kicked off below, once workspaceRoot is confirmed
+  // non-empty) finishes — DevDocsHoverProvider reads through this holder (same "mutable
+  // holder swapped once ready" idiom as `persistentIndex` below) so hovers work immediately
+  // once the first activation's downloads land, without needing a window reload.
+  const devDocsIndexHolder: { index: DevDocsOfflineIndex } = { index: new DevDocsOfflineIndex(devDocsCacheDir, []) }
+
   // Set UI `when`-clause contexts (see package.json's menus.commandPalette and
   // keybindings) so the Command Palette and keybindings only surface commands that
   // are actually relevant to this project — e.g. "Go to View" for a gem with no
@@ -191,6 +212,14 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   }
 
+  // Offline DevDocs: downloads (or reuses an already-cached) docset in the background,
+  // then swaps devDocsIndexHolder.index so DevDocsHoverProvider picks it up without a
+  // window reload. Silent on failure/offline — APIDock/RubyDoc's network-backed hovers
+  // and the live `railsforge.openDevDocs` webview keep working regardless.
+  if (workspaceRoot && config.devdocsOfflineEnabled) {
+    void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+  }
+
   // 2. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
     loadSchema(workspaceRoot, schemaIndexer)
@@ -223,6 +252,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new GemLensProvider(rubyGemsClient)),
+    vscode.languages.registerHoverProvider(
+      { language: 'ruby', scheme: 'file' },
+      new DevDocsHoverProvider(devDocsIndexHolder, () => readConfig().devdocsOfflineEnabled),
+    ),
     vscode.languages.registerHoverProvider(
       { language: 'ruby', scheme: 'file' },
       new ApiDockHoverProvider(apiDockClient, apiDockMethodIndex, () => readConfig().apidockEnabled),
@@ -336,6 +369,10 @@ export function activate(context: vscode.ExtensionContext): void {
     env,
     semanticSearchIndex,
     rubyDocProvider,
+    devDocsFetcher,
+    devDocsCacheDir,
+    devDocsSlugs,
+    devDocsIndexHolder,
   )
 
   // 5. Register Chat Participant
@@ -652,6 +689,24 @@ function registerMcpServer(root: string, mcpServerPath: string): void {
   fs.writeFileSync(mcpConfigPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 }
 
+async function refreshDevDocsCache(
+  fetcher: DevDocsFetcher,
+  cacheDir: string,
+  slugs: string[],
+  holder: { index: DevDocsOfflineIndex },
+  forceRefresh: boolean,
+): Promise<boolean[]> {
+  const results = await Promise.all(slugs.map(slug => fetcher.ensureDocset(slug, forceRefresh)))
+  holder.index = new DevDocsOfflineIndex(cacheDir, slugs)
+  if (results.some(Boolean)) {
+    Logger.info(`RailsForge: offline DevDocs cache ready for ${slugs.filter((_, i) => results[i]).join(', ')}.`)
+  }
+  if (results.some(ok => !ok)) {
+    Logger.warn(`RailsForge: could not download offline DevDocs data for ${slugs.filter((_, i) => !results[i]).join(', ')} (offline, or docset unavailable at that slug).`)
+  }
+  return results
+}
+
 function loadSchema(root: string, indexer: SchemaIndexer): void {
   const schemaPath = path.join(root, 'db', 'schema.rb')
   if (fs.existsSync(schemaPath)) {
@@ -725,6 +780,10 @@ function registerCommands(
   env: ProjectEnvironment,
   semanticSearchIndex: SemanticSearchIndex,
   rubyDocProvider: RubyDocProvider,
+  devDocsFetcher: DevDocsFetcher,
+  devDocsCacheDir: string,
+  devDocsSlugs: string[],
+  devDocsIndexHolder: { index: DevDocsOfflineIndex },
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
@@ -1295,6 +1354,19 @@ function registerCommands(
       }
 
       await vscode.env.openExternal(vscode.Uri.parse(classUrl))
+    }),
+    vscode.commands.registerCommand('railsforge.updateDevDocs', async () => {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'RailsForge: Downloading offline DevDocs data…' },
+        async () => {
+          const results = await refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, true)
+          if (results.every(Boolean)) {
+            vscode.window.showInformationMessage(`RailsForge: Offline DevDocs cache updated (${devDocsSlugs.join(', ')}).`)
+          } else {
+            vscode.window.showWarningMessage(`RailsForge: Could not download ${devDocsSlugs.filter((_, i) => !results[i]).join(', ')} — check your network connection. Previously cached data (if any) is unchanged.`)
+          }
+        },
+      )
     }),
   )
 }
