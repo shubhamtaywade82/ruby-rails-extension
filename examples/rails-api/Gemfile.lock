@@ -1,0 +1,36 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    actioncable (7.1.0)
+    actionmailbox (7.1.0)
+    actionmailer (7.1.0)
+    actionpack (7.1.0)
+    actiontext (7.1.0)
+    activejob (7.1.0)
+    activemodel (7.1.0)
+    activerecord (7.1.0)
+    activestorage (7.1.0)
+    activesupport (7.1.0)
+    brakeman (6.0.0)
+    puma (6.4.0)
+    rails (7.1.0)
+    rspec-rails (6.1.0)
+    rubocop (1.60.2)
+    sqlite3 (1.7.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  brakeman (~> 6.0)
+  puma (~> 6.4)
+  rails (~> 7.1.0)
+  rspec-rails (~> 6.1)
+  rubocop (~> 1.60)
+  sqlite3 (~> 1.7)
+
+RUBY VERSION
+   ruby 3.3.0p0
+
+BUNDLED WITH
+   2.5.6

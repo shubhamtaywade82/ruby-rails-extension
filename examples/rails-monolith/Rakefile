@@ -1,0 +1,14 @@
+require_relative "config/application"
+Rails.application.load_tasks
+
+namespace :articles do
+  desc "Publish all scheduled drafts"
+  task publish_scheduled: :environment do
+    puts "Publishing scheduled articles..."
+  end
+
+  desc "Recalculate view statistics"
+  task recalculate_views: :environment do
+    puts "Recalculating views..."
+  end
+end

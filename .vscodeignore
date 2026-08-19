@@ -13,3 +13,6 @@ PRD.md
 .claude/**
 .gitignore
 pnpm-workspace.yaml
+examples/**
+.railsforge/**
+.ruby-lsp/**

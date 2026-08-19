@@ -1,0 +1,22 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    httparty (0.21.0)
+    nokogiri (1.16.2)
+    pry (0.14.2)
+    rubocop (1.60.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  httparty (~> 0.21)
+  nokogiri (~> 1.16)
+  pry (~> 0.14)
+  rubocop (~> 1.60)
+
+RUBY VERSION
+   ruby 3.3.0p0
+
+BUNDLED WITH
+   2.5.6
