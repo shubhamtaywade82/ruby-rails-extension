@@ -349,6 +349,21 @@
               }
             }
           }
+        },
+        "railsForge.types.steepEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Steep type-checker diagnostics ('RailsForge: Run Steep Type Check'). Requires a Steepfile and the steep gem; off by default since most projects don't use RBS/Steep."
+        },
+        "railsForge.types.steepScanOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically re-run Steep in the background on Ruby file save when railsForge.types.steepEnabled is true. Debounced (like brakeman.scanOnSave) since Steep checks the whole configured target, not just the saved file."
+        },
+        "railsForge.types.rbsSigDir": {
+          "type": "string",
+          "default": "sig",
+          "description": "Directory (relative to the workspace root) RBS signature files are read from for hover/go-to-definition, and written to by 'RailsForge: Generate RBS Signatures for File'."
         }
       }
     },
@@ -414,6 +429,11 @@
         {
           "id": "railsforge.patternCatalogView",
           "name": "Design Patterns (Refactoring Guru)"
+        },
+        {
+          "id": "railsforge.rakeTasksView",
+          "name": "Rake Tasks",
+          "when": "railsforge.hasRakefile"
         }
       ]
     },
@@ -572,6 +592,37 @@
         "command": "railsforge.updateDevDocs",
         "title": "RailsForge: Update Offline DevDocs Cache",
         "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.refreshRakeTasks",
+        "title": "RailsForge: Refresh Rake Tasks",
+        "category": "RailsForge",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "railsforge.openRailsConsole",
+        "title": "RailsForge: Open Console (Pry/IRB/Rails)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.evaluateInREPL",
+        "title": "RailsForge: Evaluate Selection in REPL",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.applyRubocopStyleGuide",
+        "title": "RailsForge: Apply Community RuboCop Style Guide (Shopify/GitLab/Airbnb)",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.runSteepCheck",
+        "title": "RailsForge: Run Steep Type Check",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.generateRBS",
+        "title": "RailsForge: Generate RBS Signatures for File",
+        "category": "RailsForge"
       }
     ],
     "menus": {
@@ -631,6 +682,33 @@
         {
           "command": "railsforge.goToComponent",
           "when": "railsforge.hasViewComponent"
+        },
+        {
+          "command": "railsforge.refreshRakeTasks",
+          "when": "railsforge.hasRakefile"
+        },
+        {
+          "command": "railsforge.openRailsConsole",
+          "when": "railsforge.projectType != 'script'"
+        },
+        {
+          "command": "railsforge.applyRubocopStyleGuide",
+          "when": "railsforge.projectType != 'script'"
+        },
+        {
+          "command": "railsforge.runSteepCheck",
+          "when": "railsforge.typesSteepEnabled"
+        },
+        {
+          "command": "railsforge.generateRBS",
+          "when": "railsforge.projectType != 'script'"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "railsforge.refreshRakeTasks",
+          "when": "view == railsforge.rakeTasksView",
+          "group": "navigation"
         }
       ]
     },
@@ -669,6 +747,12 @@
         "command": "railsforge.openDevDocs",
         "key": "alt+r d",
         "mac": "cmd+alt+r d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "railsforge.evaluateInREPL",
+        "key": "alt+r e",
+        "mac": "cmd+alt+r e",
         "when": "editorTextFocus"
       }
     ]

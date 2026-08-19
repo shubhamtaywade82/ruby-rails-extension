@@ -77,6 +77,7 @@ DEPENDENCIES
       hasViewComponent: true,
       hasStrongMigrations: true,
       hasBrakeman: false,
+      hasPry: false,
       testFramework: 'rspec' as const,
       binstubs: new Set(['rubocop']),
       projectType: 'monolith' as const,

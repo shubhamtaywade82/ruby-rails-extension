@@ -71,6 +71,9 @@ export interface RailsForgeConfig {
   devdocsFetchTimeoutMs: number
   devdocsRubySlug: string
   devdocsRailsSlug: string
+  typesSteepEnabled: boolean
+  typesSteepScanOnSave: boolean
+  typesRbsSigDir: string
 }
 
 export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig {
@@ -111,6 +114,9 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     devdocsFetchTimeoutMs: cfg.get<number>('devdocs.fetchTimeoutMs', 30000),
     devdocsRubySlug: cfg.get<string>('devdocs.rubySlug', ''),
     devdocsRailsSlug: cfg.get<string>('devdocs.railsSlug', ''),
+    typesSteepEnabled: cfg.get<boolean>('types.steepEnabled', false),
+    typesSteepScanOnSave: cfg.get<boolean>('types.steepScanOnSave', false),
+    typesRbsSigDir: cfg.get<string>('types.rbsSigDir', 'sig'),
   }
 }
 

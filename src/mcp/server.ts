@@ -30,6 +30,9 @@ import { RubyDocProvider } from '../docs/RubyDocProvider'
 import { GemSymbolResolver } from '../docs/GemSymbolResolver'
 import { parseGemfileLock } from '../gems/GemfileLockParser'
 import { DevDocsOfflineIndex } from '../docs/DevDocsOfflineIndex'
+import { RBSIndex } from '../types/RBSIndex'
+import { RakeTaskIndexer } from '../rake/RakeTaskIndexer'
+import { getLearningResource } from '../principles/LearningResources'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -366,6 +369,76 @@ server.registerTool(
       return { content: [{ type: 'text', text: `No offline DevDocs entry found for "${symbol_name}". Either it isn't cached yet (open this workspace in VS Code with RailsForge, or run "RailsForge: Update Offline DevDocs Cache"), or it doesn't exist in the cached docset(s).` }] }
     }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+  },
+)
+
+let rbsIndex: RBSIndex | null = null
+
+/** Built once per server process — RBSIndex.loadFromWorkspace walks every .rbs file under sig/, not worth repeating per call. */
+function getRbsIndex(): RBSIndex {
+  if (!rbsIndex) {
+    rbsIndex = new RBSIndex()
+    rbsIndex.loadFromWorkspace(workspaceRoot, 'sig')
+  }
+  return rbsIndex
+}
+
+server.registerTool(
+  'get_rbs_signature',
+  {
+    title: 'Get RBS type signature',
+    description: 'Returns the RBS (Ruby type signature) declaration for a method, from this project\'s sig/ directory, if one exists. Use this to check a method\'s declared parameter/return types before calling it or writing code against it.',
+    inputSchema: {
+      method_name: z.string().describe('Method name, e.g. "authorize"'),
+      class_name: z.string().optional().describe('Class/module name to disambiguate when the same method name is declared on multiple classes'),
+    },
+  },
+  async ({ method_name, class_name }) => {
+    const index = getRbsIndex()
+    if (index.isEmpty) {
+      return { content: [{ type: 'text', text: 'No RBS signatures found (no sig/ directory, or it\'s empty).' }] }
+    }
+    const matches = index.lookup(method_name)
+    const filtered = class_name ? matches.filter(m => m.className === class_name) : matches
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text', text: `No RBS signature found for ${class_name ? `${class_name}#${method_name}` : method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'list_rake_tasks',
+  {
+    title: 'List Rake tasks',
+    description: 'Lists this project\'s Rake tasks (name, namespace, description) via `rake -T` — use before suggesting a shell command, to check whether a task for it already exists (e.g. db:migrate, a custom deploy/report task) rather than proposing a new script.',
+    inputSchema: { filter: z.string().optional().describe('Only return tasks whose name contains this substring') },
+  },
+  async ({ filter }) => {
+    const tasks = await new RakeTaskIndexer().listTasks(workspaceRoot)
+    const filtered = filter ? tasks.filter(t => t.name.includes(filter)) : tasks
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text', text: 'No Rake tasks found (no Rakefile, rake not installed, or no tasks matched the filter).' }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] }
+  },
+)
+
+server.registerTool(
+  'suggest_learning_resource',
+  {
+    title: 'Suggest a learning resource for a design smell',
+    description: 'Given one of RailsForge\'s own design-principle diagnostic ids (SRP-FAT-CLASS, DEMETER-VIOLATION, KISS-METAPROGRAMMING, YAGNI-UNUSED-PRIVATE — as seen in this project\'s "RailsForge Principles" diagnostics), returns a specific book/chapter recommendation for further reading.',
+    inputSchema: {
+      diagnostic_id: z.enum(['SRP-FAT-CLASS', 'DEMETER-VIOLATION', 'KISS-METAPROGRAMMING', 'YAGNI-UNUSED-PRIVATE']),
+    },
+  },
+  async ({ diagnostic_id }) => {
+    const resource = getLearningResource(diagnostic_id)
+    if (!resource) {
+      return { content: [{ type: 'text', text: `No learning resource mapped for "${diagnostic_id}".` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(resource, null, 2) }] }
   },
 )
 
