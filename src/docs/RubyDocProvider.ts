@@ -188,11 +188,16 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+const INLINE_FORMATTING_TAGS = /<\/?(?:strong|tt|em|b|i)\b[^>]*>/g
+
 function stripHtml(fragment: string): string {
   // Inline formatting tags (<strong>authorize</strong>(args) in a signature) drop out
   // with no replacement so they don't introduce a spurious space before "(args)";
   // everything else (block-level structure) becomes a space, same as ApiDockClient.
-  const withoutInlineTags = fragment.replace(/<\/?(?:strong|tt|em|b|i)\b[^>]*>/g, '')
+  // Looped to a fixed point (via stripHtmlTags, not a single .replace()) same as the
+  // second pass below — a single non-recursive pass over a narrow tag set is exactly
+  // the "incomplete sanitization" gap CodeQL flags, regardless of which tags it targets.
+  const withoutInlineTags = stripHtmlTags(fragment, '', INLINE_FORMATTING_TAGS)
   return decodeHtmlEntities(stripHtmlTags(withoutInlineTags))
 }
 

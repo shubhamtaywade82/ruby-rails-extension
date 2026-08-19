@@ -36,17 +36,21 @@ export function decodeHtmlEntities(text: string): string {
 }
 
 /**
- * Strips `<...>` tags, looping until none remain. `replacement` defaults to a space so
- * adjacent block-level tags (`<p>a</p><p>b</p>`) don't glue words together; pass `''` to
- * preserve exact original spacing/newlines instead (e.g. for `<pre>` source code, where
- * collapsing whitespace would corrupt it).
+ * Strips tags matching `tagPattern` (default: any `<...>` span), looping until none
+ * remain. `replacement` defaults to a space so adjacent block-level tags
+ * (`<p>a</p><p>b</p>`) don't glue words together; pass `''` to preserve exact original
+ * spacing/newlines instead (e.g. for `<pre>` source code, where collapsing whitespace
+ * would corrupt it). A caller stripping only specific named tags (e.g. just inline
+ * formatting tags) should still pass that narrower pattern through here rather than
+ * hand-rolling a single `.replace()` call — looping to a fixed point is what closes the
+ * "incomplete sanitization" gap regardless of which tags are targeted.
  */
-export function stripHtmlTags(fragment: string, replacement = ' '): string {
+export function stripHtmlTags(fragment: string, replacement = ' ', tagPattern: RegExp = /<[^>]*>/g): string {
   let text = fragment
   let previous: string
   do {
     previous = text
-    text = text.replace(/<[^>]*>/g, replacement)
+    text = text.replace(tagPattern, replacement)
   } while (text !== previous)
   return text
 }

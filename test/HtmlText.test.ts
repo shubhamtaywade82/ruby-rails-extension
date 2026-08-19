@@ -49,6 +49,15 @@ describe('stripHtmlTags', () => {
   it('terminates (does not loop forever) on input with no tags at all', () => {
     expect(stripHtmlTags('plain text, no tags')).toBe('plain text, no tags')
   })
+
+  it('loops to a fixed point for a narrower tagPattern too, not just the default any-tag pattern', () => {
+    // A single non-recursive pass targeting only <strong> (RubyDocProvider's inline-tag
+    // pre-strip) is exactly the same "incomplete sanitization" shape CodeQL flagged for
+    // the default pattern — verifying the fix generalizes to a caller-supplied pattern.
+    const strongOnly = /<\/?strong\b[^>]*>/g
+    const result = stripHtmlTags('<st<strong>rong>', '', strongOnly)
+    expect(result).not.toMatch(strongOnly)
+  })
 })
 
 describe('normalizeWhitespace', () => {
