@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+import { describe, it, expect, afterEach } from 'vitest'
 import { ProjectPatternIndexer } from '../src/patterns/ProjectPatternIndexer'
-import { inferPatternGuidelines, inferAllPatternGuidelines } from '../src/patterns/PatternInference'
+import { inferPatternGuidelines, inferAllPatternGuidelines, findServiceObjectsDir, indexServiceObjectsDir } from '../src/patterns/PatternInference'
 
 function serviceFile(className: string, superclass: string, methodName: string): string {
   return `class ${className} < ${superclass}\n  def ${methodName}\n  end\nend\n`
@@ -56,5 +59,66 @@ describe('inferAllPatternGuidelines', () => {
     expect(result.service).toBeDefined()
     expect(result.query).toBeUndefined()
     expect(result.policy).toBeUndefined()
+  })
+})
+
+describe('findServiceObjectsDir', () => {
+  let tmpRoot: string
+
+  afterEach(() => {
+    if (tmpRoot) {fs.rmSync(tmpRoot, { recursive: true, force: true })}
+  })
+
+  it('returns null when none of the conventional directories exist', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    expect(findServiceObjectsDir(tmpRoot)).toBeNull()
+  })
+
+  it('finds app/services when present', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    fs.mkdirSync(path.join(tmpRoot, 'app', 'services'), { recursive: true })
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'services', 'x_service.rb'), serviceFile('XService', 'Base', 'call'))
+    expect(findServiceObjectsDir(tmpRoot)).toBe('app/services')
+  })
+
+  it('falls back to app/operations when app/services does not exist', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    fs.mkdirSync(path.join(tmpRoot, 'app', 'operations'), { recursive: true })
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'operations', 'x_operation.rb'), serviceFile('XOperation', 'Base', 'call'))
+    expect(findServiceObjectsDir(tmpRoot)).toBe('app/operations')
+  })
+
+  it('ignores an empty directory with no .rb files and keeps looking', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    fs.mkdirSync(path.join(tmpRoot, 'app', 'services'), { recursive: true })
+    fs.mkdirSync(path.join(tmpRoot, 'app', 'operations'), { recursive: true })
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'operations', 'x_operation.rb'), serviceFile('XOperation', 'Base', 'call'))
+    expect(findServiceObjectsDir(tmpRoot)).toBe('app/operations')
+  })
+})
+
+describe('indexServiceObjectsDir', () => {
+  let tmpRoot: string
+
+  afterEach(() => {
+    if (tmpRoot) {fs.rmSync(tmpRoot, { recursive: true, force: true })}
+  })
+
+  it('indexes .rb files in the given directory as service patterns', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    fs.mkdirSync(path.join(tmpRoot, 'app', 'operations'), { recursive: true })
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'operations', 'create_order.rb'), serviceFile('CreateOrder', 'Interactor', 'run'))
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'operations', 'cancel_order.rb'), serviceFile('CancelOrder', 'Interactor', 'run'))
+    fs.writeFileSync(path.join(tmpRoot, 'app', 'operations', 'README.md'), 'not ruby')
+
+    const patterns = indexServiceObjectsDir(tmpRoot, 'app/operations')
+    expect(patterns).toHaveLength(2)
+    expect(patterns.every(p => p.type === 'service')).toBe(true)
+    expect(patterns.map(p => p.superclass)).toEqual(['Interactor', 'Interactor'])
+  })
+
+  it('returns an empty array when the directory does not exist', () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'railsforge-svcdir-'))
+    expect(indexServiceObjectsDir(tmpRoot, 'app/operations')).toEqual([])
   })
 })

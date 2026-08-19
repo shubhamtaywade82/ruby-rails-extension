@@ -1,22 +1,29 @@
 /**
  * PatternInference - Auto-learns a project's own conventions (base class, primary method
  * name) from patterns ProjectPatternIndexer already found, for when there's no
- * `.railsforge.yml` telling RailsForge explicitly. Deliberately reuses
- * ProjectPatternIndexer's existing index rather than re-scanning the filesystem — no new
- * file-walking, no new indexing pass, just aggregation over data already collected for
+ * `.railsforge.yml` telling RailsForge explicitly. `inferPatternGuidelines` deliberately
+ * reuses ProjectPatternIndexer's existing index rather than re-scanning the filesystem —
+ * no new file-walking, just aggregation over data already collected for
  * `find_similar_pattern`/the pattern catalog.
  *
- * One real limitation, worth stating rather than glossing over: ProjectPatternIndexer only
- * ever looks inside a fixed set of conventional directories (`/services/`, `/queries/`,
- * etc. — see its own DIR_TYPE_MAP). So this can genuinely learn "this project's services
- * inherit from `Interactor`, not `ApplicationService`" (real inference, since nothing told
- * it that superclass name in advance), but it can't discover that a project keeps its
- * service-equivalent objects in `lib/operations/` instead — that's what `.railsforge.yml`'s
- * `service_objects_dir` override exists for; inference alone can't find a directory it
- * never looks in.
+ * That data only ever comes from a fixed set of conventional directories, though (see
+ * ProjectPatternIndexer's own DIR_TYPE_MAP), so a project keeping its service-equivalent
+ * objects in `app/operations` instead of `app/services` would otherwise never be inferred
+ * from at all — not just "the directory name is unknown," inference would find zero
+ * patterns and silently fall back to Rails' defaults no matter how consistent the
+ * project's own `app/operations` convention actually is. `findServiceObjectsDir` +
+ * `indexServiceObjectsDir` close that gap with a small, separate directory-name scan
+ * (checked in a fixed priority order, first match wins) purpose-built for service
+ * objects specifically — the one pattern type `.railsforge.yml` lets a team override the
+ * directory for.
  */
 
+import * as fs from 'fs'
+import * as path from 'path'
 import { IndexedPattern, PatternType, ProjectPatternIndexer } from './ProjectPatternIndexer'
+
+/** Checked in priority order; the first directory that exists and contains at least one .rb file wins. */
+const ALTERNATE_SERVICE_OBJECT_DIRS = ['app/services', 'app/operations', 'app/interactors', 'lib/services', 'lib/operations']
 
 export interface InferredPatternGuidelines {
   /** Most common superclass among indexed patterns of this type, or null if none share one (e.g. plain-object/module pattern, or too few samples). */
@@ -55,6 +62,55 @@ export function inferAllPatternGuidelines(indexer: ProjectPatternIndexer): Parti
   }
 
   return result
+}
+
+/**
+ * Checks each of `ALTERNATE_SERVICE_OBJECT_DIRS` in priority order and returns the first
+ * that exists and holds at least one `.rb` file — a project keeping its service-equivalent
+ * objects somewhere other than `app/services` (`app/operations`, `app/interactors`, ...)
+ * still gets found, without needing `.railsforge.yml` to say so first.
+ */
+export function findServiceObjectsDir(workspaceRoot: string): string | null {
+  for (const dir of ALTERNATE_SERVICE_OBJECT_DIRS) {
+    const full = path.join(workspaceRoot, dir)
+    try {
+      if (fs.statSync(full).isDirectory() && fs.readdirSync(full).some(f => f.endsWith('.rb'))) {
+        return dir
+      }
+    } catch {
+      // Directory doesn't exist (or isn't readable) — try the next candidate.
+    }
+  }
+  return null
+}
+
+/**
+ * A small, standalone scan of `dir`'s top-level `.rb` files, indexed as `service` patterns
+ * regardless of whether `dir` matches ProjectPatternIndexer's own conventional-directory
+ * list — for computing inference over a directory that list doesn't already cover. Uses a
+ * fresh, throwaway indexer rather than mutating a shared one, so this never interferes
+ * with the caller's own already-populated index.
+ */
+export function indexServiceObjectsDir(workspaceRoot: string, dir: string): IndexedPattern[] {
+  const full = path.join(workspaceRoot, dir)
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(full)
+  } catch {
+    return []
+  }
+
+  const indexer = new ProjectPatternIndexer()
+  for (const file of entries) {
+    if (!file.endsWith('.rb')) {continue}
+    const filePath = path.join(full, file)
+    try {
+      indexer.indexFileAs(filePath, fs.readFileSync(filePath, 'utf8'), 'service')
+    } catch {
+      // Skip an unreadable file rather than failing the whole scan.
+    }
+  }
+  return indexer.getPatternsByType('service')
 }
 
 function mostCommon(values: string[]): { value: string; count: number } | null {

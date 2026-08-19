@@ -574,6 +574,11 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.generateServiceObject",
+        "title": "RailsForge: Generate New Service Object",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.showSchemaPeek",
         "title": "RailsForge: Peek Model Schema",
         "category": "RailsForge"
@@ -673,6 +678,10 @@
         },
         {
           "command": "railsforge.extractQuery",
+          "when": "railsforge.isRailsApp"
+        },
+        {
+          "command": "railsforge.generateServiceObject",
           "when": "railsforge.isRailsApp"
         },
         {

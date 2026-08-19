@@ -1352,6 +1352,21 @@ function registerCommands(
       const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
       await vscode.window.showTextDocument(doc)
     }),
+    vscode.commands.registerCommand('railsforge.generateServiceObject', async () => {
+      const name = await vscode.window.showInputBox({ prompt: 'Enter Service Object Name (e.g. ProcessOrder)' })
+      if (!name) {return}
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
+      const guidelines = loadEffectiveServiceObjectGuidelines(root, projectPatternIndexer)
+      const res = serviceExtractor.extractService(name, '# TODO: implement', [], root, guidelines)
+
+      if (fs.existsSync(res.serviceFilePath)) {
+        vscode.window.showErrorMessage(`RailsForge: ${path.relative(root, res.serviceFilePath)} already exists.`)
+        return
+      }
+      serviceExtractor.saveServiceFile(res.serviceFilePath, res.serviceCode)
+      const doc = await vscode.workspace.openTextDocument(res.serviceFilePath)
+      await vscode.window.showTextDocument(doc)
+    }),
     vscode.commands.registerCommand('railsforge.extractQuery', async () => {
       const editor = vscode.window.activeTextEditor
       if (!editor) {return}

@@ -34,7 +34,7 @@ import { RBSIndex } from '../types/RBSIndex'
 import { RakeTaskIndexer } from '../rake/RakeTaskIndexer'
 import { getLearningResource } from '../principles/LearningResources'
 import { loadProjectGuidelines } from '../config/ProjectGuidelines'
-import { getEffectiveServiceObjectGuidelines } from '../config/EffectiveGuidelines'
+import { loadEffectiveServiceObjectGuidelines } from '../config/EffectiveGuidelines'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -454,7 +454,7 @@ server.registerTool(
   async () => {
     const explicit = loadProjectGuidelines(workspaceRoot)
     const indexer = loadPatternIndexer()
-    const serviceObjects = getEffectiveServiceObjectGuidelines(explicit, indexer)
+    const serviceObjects = loadEffectiveServiceObjectGuidelines(workspaceRoot, indexer)
 
     return {
       content: [{
