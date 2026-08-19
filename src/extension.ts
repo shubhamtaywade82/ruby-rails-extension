@@ -942,6 +942,56 @@ function rubySyntaxError(content: string): Promise<string | null> {
   })
 }
 
+/**
+ * Extracts a RuboCop cop name from a diagnostic message. RuboCop diagnostics are
+ * `"<message> (<Cop/Name>)"` (RailsForge) or `"<Cop/Name>: <message>"` (direct);
+ * RailsForge principle diagnostics carry no cop and return null (unverifiable).
+ */
+function copNameFromMessage(message: string): string | null {
+  const paren = /\(([A-Z][A-Za-z0-9/]+)\)\s*$/.exec(message)
+  if (paren) {return paren[1]}
+  const prefix = /^([A-Z][A-Za-z0-9/]+):/.exec(message)
+  return prefix ? prefix[1] : null
+}
+
+type OffenseVerification =
+  | { status: 'clean' }
+  | { status: 'skipped'; reason: string }
+  | { status: 'remaining'; offense: string }
+
+/**
+ * Extracts the reported line number from a `ruby -c` error (e.g. "-:11: syntax
+ * error, unexpected `end'") and returns the proposed file's lines around it, so
+ * the model's retry can see exactly what it produced instead of a bare message.
+ */
+function syntaxErrorContext(error: string, content: string): string {
+  const match = /(?:^|\s)(\d+):\s/.exec(error)
+  if (!match) {return ''}
+  const errLine = Number(match[1])
+  if (!Number.isInteger(errLine) || errLine < 1) {return ''}
+  const lines = content.split('\n')
+  if (errLine > lines.length) {return ''}
+  const from = Math.max(0, errLine - 3)
+  const to = Math.min(lines.length, errLine + 2)
+  return `\nThe lines around the error in your proposed file:\n${lines.slice(from, to).map((l, i) => `${from + i + 1}: ${l}`).join('\n')}`
+}
+
+/** Runs rubocop `--only <cop>` on proposed content and reports whether the offense is gone. */
+async function verifyOffenseResolved(
+  cop: string,
+  rubocop: RuboCopProvider,
+  filePath: string,
+  content: string,
+): Promise<OffenseVerification> {
+  const offenses = await rubocop.offensesForCop(cop, filePath, content)
+  if (offenses === null) {
+    return { status: 'skipped', reason: `rubocop unavailable (could not verify ${cop})` }
+  }
+  if (offenses.length === 0) {return { status: 'clean' }}
+  const first = offenses[0]
+  return { status: 'remaining', offense: `${first.message} (${cop}) at line ${first.location.start_line}` }
+}
+
 function watchProjectFiles(
   context: vscode.ExtensionContext,
   root: string,
@@ -1342,10 +1392,48 @@ function registerCommands(
             return { text: applyHunks(fullText, hunks), note }
           }
 
-          // At most two attempts: if the first proposal produces invalid Ruby, its
-          // syntax error is fed back so the model can correct the diff directly.
+          // Agentic verify loop: propose → apply in-memory → check Ruby syntax →
+          // re-run rubocop for the reported cop → feed remaining offense back.
+          // Each failure mode retries while the attempt budget lasts; a repeated
+          // proposal (no progress) short-circuits so we don't burn the budget.
+          const cop = copNameFromMessage(diagnosticMessage)
+
+          // Deterministic fix for common offenses — bypass the model entirely for
+          // patterns we can fix programmatically. Currently: Style/Documentation on
+          // a single-line class/module header (adds a one-line comment above it).
+          let deterministicFix: string | null = null
+          if (cop === 'Style/Documentation' && targetRange.start.line === targetRange.end.line) {
+            const headerLine = fullText.split('\n')[targetRange.start.line]
+            if (/^\s*(?:class|module)\s+[A-Z]/.test(headerLine.trim())) {
+              const lines = fullText.split('\n')
+              const indent = headerLine.match(/^\s*/)?.[0] ?? ''
+              const className = headerLine.match(/(?:class|module)\s+([A-Z]\w*)/)?.[1] ?? 'Product'
+              const comment = `${indent}# ${className} model.`
+              lines.splice(targetRange.start.line, 0, comment)
+              deterministicFix = lines.join('\n')
+              Logger.debug(`[AI Fix] Applied deterministic fix for ${cop}`)
+            }
+          }
+
+          if (deterministicFix) {
+            const syntaxErr = await rubySyntaxError(deterministicFix)
+            if (!syntaxErr) {
+              const verification = await verifyOffenseResolved(cop!, rubocop, document.fileName, deterministicFix)
+              if (verification.status === 'clean' || verification.status === 'skipped') {
+                const edit = new vscode.WorkspaceEdit()
+                edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), deterministicFix)
+                await vscode.workspace.applyEdit(edit)
+                vscode.window.showInformationMessage(`RailsForge: Deterministic fix applied for "${diagnosticMessage}".`)
+                return
+              }
+            }
+          }
+          const MAX_FIX_ATTEMPTS = 4
           let feedback: string | undefined
-          for (let attempt = 0; attempt < 2; attempt++) {
+          let lastText: string | null = null
+          let lastRejection: string | null = null
+
+          for (let attempt = 0; attempt < MAX_FIX_ATTEMPTS; attempt++) {
             const proposal = await agent.suggestFix(code, diagnosticMessage, {
               fileName: document.fileName,
               fileContent: document.getText(),
@@ -1361,34 +1449,53 @@ function registerCommands(
 
             const applied = await applyProposal(proposal)
             if (!applied) {return}
-            if ('error' in applied) {
-              // On the first attempt, feed the apply failure back for a corrected
-              // diff; only reject after the model has had that chance.
-              if (attempt === 0) {
-                Logger.warn(`[AI Fix] Retrying: ${applied.error}`)
-                feedback = applied.error
-                continue
-              }
-              Logger.warn(`[AI Fix] Rejected: ${applied.error}`)
-              vscode.window.showWarningMessage(`RailsForge: AI fix could not be applied — ${applied.error}.`)
-              return
-            }
 
-            const syntaxErr = await rubySyntaxError(applied.text)
-            if (syntaxErr && attempt === 0) {
-              Logger.warn(`[AI Fix] Retrying: proposal produced invalid Ruby syntax: ${syntaxErr}`)
-              feedback = syntaxErr
+            if ('error' in applied) {
+              Logger.warn(`[AI Fix] Retrying: ${applied.error}`)
+              feedback = applied.error
+              lastRejection = applied.error
               continue
             }
+
+            if (applied.text === lastText) {
+              Logger.warn('[AI Fix] Rejected: model repeated the same fix without making progress')
+              vscode.window.showWarningMessage('RailsForge: AI fix stopped — the model repeated the same fix.')
+              return
+            }
+            lastText = applied.text
+
+            const syntaxErr = await rubySyntaxError(applied.text)
             if (syntaxErr) {
-              Logger.warn(`[AI Fix] Rejected: response would produce invalid Ruby syntax: ${syntaxErr}`)
-              vscode.window.showWarningMessage('RailsForge: AI fix rejected — it would produce invalid Ruby syntax.')
+              Logger.warn(`[AI Fix] Retrying: proposal produced invalid Ruby syntax: ${syntaxErr}`)
+              feedback = `Your fix would produce invalid Ruby syntax:\n${syntaxErr}${syntaxErrorContext(syntaxErr, applied.text)}`
+              lastRejection = `the fix would produce invalid Ruby syntax: ${syntaxErr}`
+              continue
+            }
+
+            if (!cop) {
+              // Principle-linter diagnostics carry no cop, so there's nothing to
+              // verify — offer the syntax-checked fix as before.
+              await reviewAndApply(applied.text, applied.note)
               return
             }
 
-            await reviewAndApply(applied.text, applied.note)
-            return
+            const verification = await verifyOffenseResolved(cop, rubocop, document.fileName, applied.text)
+            if (verification.status === 'clean') {
+              Logger.debug(`[AI Fix] Verified: ${cop} no longer reported (attempt ${attempt + 1})`)
+              await reviewAndApply(applied.text, applied.note)
+              return
+            }
+            if (verification.status === 'skipped') {
+              Logger.warn(`[AI Fix] ${verification.reason} — offering fix without verification`)
+              await reviewAndApply(applied.text, applied.note)
+              return
+            }
+            Logger.debug(`[AI Fix] Offense remains after attempt ${attempt + 1}: ${verification.offense}`)
+            feedback = `RuboCop still reports the offense in the proposed file: ${verification.offense}. Your fix must resolve this exact offense — do not just reformat or add a rubocop:disable comment.`
           }
+
+          Logger.warn(`[AI Fix] Rejected after ${MAX_FIX_ATTEMPTS} attempts: ${lastRejection ?? 'reported offense still present'}`)
+          vscode.window.showWarningMessage(`RailsForge: AI fix could not be resolved — ${lastRejection ?? 'RuboCop still reports the issue'}.`)
         },
       )
     }),

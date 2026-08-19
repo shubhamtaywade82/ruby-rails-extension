@@ -343,6 +343,8 @@ export class RailsAgent {
   }
 
   private buildFixInstruction(code: string, diagnosticMessage: string, feedback?: string): string {
+    const isDocHeaderFix = !code.includes('\n') && /^(?:class|module)\s+[A-Z]/.test(code.trim()) &&
+      /Documentation|documentation/i.test(diagnosticMessage)
     const lines = feedback
       ? [
         `Fix the following issue in the file above: "${diagnosticMessage}".`,
@@ -357,10 +359,36 @@ export class RailsAgent {
     return lines.concat([
       '- Each hunk starts with a line like: @@ -12,4 +12,5 @@',
       "- Prefix unchanged lines with a single space, removed lines with '-', added lines with '+'.",
-      '- Include 2-3 lines of exact context around each change; context must match the file verbatim.',
+      '- Context lines (starting with a single space) MUST exactly match lines from the File Content above — DO NOT invent or modify context lines.',
       '- Line numbers are relative to the File Content above.',
       '- Do not reformat or touch anything unrelated to the issue.',
-      'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
+      isDocHeaderFix
+        ? '- CRITICAL: This is a MISSING DOCUMENTATION fix on a CLASS/MODULE header. ' +
+          'You must ADD a single comment line ABOVE the class/module header. ' +
+          'DO NOT replace the header line. DO NOT comment out any existing code. ' +
+          'DO NOT touch validations, methods, or the class body. DO NOT add `frozen_string_literal`. ' +
+          'The diff MUST contain EXACTLY ONE hunk with 2-3 context lines.'
+        : '- Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
+      '',
+      'DIFF FORMAT EXAMPLES:',
+      '',
+      'CORRECT (minimal doc fix — ADD one comment line above the class):',
+      '--- a/app/models/product.rb',
+      '+++ b/app/models/product.rb',
+      '@@ -12,3 +12,4 @@',
+      ' class Product < ApplicationRecord',
+      '+# Top-level documentation for Product.',
+      '   validates :sku, presence: true',
+      '',
+      'WRONG — DO NOT DO THESE:',
+      '- Do NOT write multiple hunks — ONE hunk only.',
+      '- Do NOT comment out or replace existing lines (no `-` lines unless removing).',
+      '- Do NOT touch validations, methods, or the class body.',
+      '- Do NOT add `frozen_string_literal: true` unless the issue is about that.',
+      '- Do NOT miscount lines in the @@ header — the parser counts actual prefixed lines.',
+      '- Do NOT include `--- a/` or `+++ b/` without a space after the dashes.',
+      '- Do NOT invent context lines — they MUST exist in the File Content above.',
+      '',
       'The File Content above is READ-ONLY context, not something you can edit — but if a sibling method there ' +
         'shares this exact resource/pattern (e.g. both open the same kind of connection), your fix must stay ' +
         'consistent with it. Do not introduce a convention (like an injectable instance variable) in this snippet ' +
@@ -373,11 +401,40 @@ export class RailsAgent {
     ]).join('\n')
   }
 
-  private buildFixRetryInstruction(code: string, diagnosticMessage: string, previousResponse: string): string {
+private buildFixRetryInstruction(code: string, diagnosticMessage: string, previousResponse: string): string {
+    const isDocHeaderFix = !code.includes('\n') && /^(?:class|module)\s+[A-Z]/.test(code.trim()) &&
+      /Documentation|documentation/i.test(diagnosticMessage)
     return [
       `The issue to fix: "${diagnosticMessage}".`,
       'Your previous response was not a valid unified diff, so it could not be applied.',
       'Return a minimal unified diff (git format) that fixes ONLY this issue.',
+      isDocHeaderFix
+        ? 'CRITICAL: This is a MISSING DOCUMENTATION fix on a CLASS/MODULE header. ' +
+          'You must ADD a single comment line ABOVE the class/module header. ' +
+          'DO NOT replace the header line. DO NOT comment out any existing code. ' +
+          'DO NOT touch validations, methods, or the class body. DO NOT add `frozen_string_literal`. ' +
+          'The diff MUST contain EXACTLY ONE hunk with 2-3 context lines. ' +
+          'Context lines (starting with space) MUST EXACTLY MATCH the File Content — do not invent them.'
+        : '',
+      'DIFF FORMAT EXAMPLES:',
+      '',
+      'CORRECT (minimal doc fix — ADD one comment line above the class):',
+      '--- a/app/models/product.rb',
+      '+++ b/app/models/product.rb',
+      '@@ -12,3 +12,4 @@',
+      ' class Product < ApplicationRecord',
+      '+# Top-level documentation for Product.',
+      '   validates :sku, presence: true',
+      '',
+      'WRONG — DO NOT DO THESE:',
+      '- Do NOT write multiple hunks — ONE hunk only.',
+      '- Do NOT comment out or replace existing lines (no `-` lines unless removing).',
+      '- Do NOT touch validations, methods, or the class body.',
+      '- Do NOT add `frozen_string_literal: true` unless the issue is about that.',
+      '- Do NOT miscount lines in the @@ header — the parser counts actual prefixed lines.',
+      '- Do NOT include `--- a/` or `+++ b/` without a space after the dashes.',
+      '- Do NOT invent context lines — they MUST exist in the File Content above.',
+      '',
       'The diff must be in EXACTLY this format:',
       '```',
       '--- a/<file path>',
@@ -390,7 +447,9 @@ export class RailsAgent {
       '- Context lines start with a single space and must match the file verbatim.',
       '- Line numbers are relative to the File Content above.',
       '- Do not reformat or touch anything unrelated to the issue.',
-      'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
+      isDocHeaderFix
+        ? '- For this documentation fix: ONLY add comment line(s). No class body. No `end`.'
+        : 'Follow SOLID/DRY/YAGNI/KISS and this project\'s existing patterns.',
       'The File Content above is READ-ONLY context — if a sibling method there shares this exact resource/pattern, ' +
         'your fix must stay consistent with it.',
       'Never close, disconnect, or otherwise release an object this snippet did not itself create.',
@@ -400,7 +459,7 @@ export class RailsAgent {
       previousResponse.slice(0, 2000),
       '',
       code,
-    ].join('\n')
+    ].filter(Boolean).join('\n')
   }
 
   /**

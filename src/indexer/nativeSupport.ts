@@ -11,19 +11,79 @@
  * check has already confirmed the runtime supports it.
  */
 
+import * as fs from 'fs'
+import { execSync } from 'child_process'
+
 const REQUIRED_NAPI_VERSION = 10
 const REQUIRED_LINUX_GLIBC = [2, 33]
 
-export function getLinuxGlibcVersion(): string | undefined {
-  if (process.platform !== 'linux') {return undefined}
+const LIBC_PATHS = [
+  '/lib/x86_64-linux-gnu/libc.so.6',
+  '/usr/lib/x86_64-linux-gnu/libc.so.6',
+  '/lib64/libc.so.6',
+  '/lib/aarch64-linux-gnu/libc.so.6',
+  '/usr/lib/aarch64-linux-gnu/libc.so.6',
+]
+
+function parseGlibcFromLibc(libcPath: string): string | undefined {
   try {
-    const report = process.report?.getReport?.() as { header?: { glibcVersionRuntime?: string } } | undefined
-    return report?.header?.glibcVersionRuntime
+    const buf = fs.readFileSync(libcPath)
+    // GLIBC version symbols are strings like "GLIBC_2.31", "GLIBC_2.33"
+    // Scan the binary for GLIBC_2.xx patterns
+    const str = buf.toString('latin1')
+    const matches = str.match(/GLIBC_(\d+\.\d+)/g)
+    if (!matches) return undefined
+    // Find the highest version
+    const versions = matches
+      .map((m: string) => m.slice(7))
+      .map((v: string) => v.split('.').map(Number) as [number, number])
+      .sort((a: [number, number], b: [number, number]) => b[0] - a[0] || b[1] - a[1])
+    const [major, minor] = versions[0]
+    return `${major}.${minor}`
   } catch {
-    // Some sandboxed/embedded hosts (e.g. remote extension hosts) can throw here
-    // instead of returning undefined — either way, treat as "couldn't determine".
     return undefined
   }
+}
+
+function parseGlibcFromLdd(): string | undefined {
+  try {
+    const output = execSync('ldd --version', { encoding: 'utf8', timeout: 1000 })
+    // Output like: "ldd (Ubuntu GLIBC 2.31-0ubuntu9.18) 2.31"
+    const match = output.match(/GLIBC\s+(\d+\.\d+)/i)
+    if (match) return match[1]
+    // Fallback: parse last version-like string
+    const versions = output.match(/\b(\d+\.\d+)\b/g)
+    if (versions) return versions[versions.length - 1]
+  } catch {
+    // ldd not available or failed
+  }
+  return undefined
+}
+
+export function getLinuxGlibcVersion(): string | undefined {
+  if (process.platform !== 'linux') {return undefined}
+
+  // 1. Try process.report (works in standard Node, not always in Electron)
+  try {
+    const report = process.report?.getReport?.() as { header?: { glibcVersionRuntime?: string } } | undefined
+    if (report?.header?.glibcVersionRuntime) {
+      return report.header.glibcVersionRuntime
+    }
+  } catch {
+    // Some sandboxed/embedded hosts (e.g. remote extension hosts) can throw here
+  }
+
+  // 2. Fallback: parse ldd --version output (returns actual runtime GLIBC version)
+  const lddVersion = parseGlibcFromLdd()
+  if (lddVersion) return lddVersion
+
+  // 3. Fallback: scan libc binary for GLIBC version symbols (may be lower than runtime)
+  for (const path of LIBC_PATHS) {
+    const version = parseGlibcFromLibc(path)
+    if (version) return version
+  }
+
+  return undefined
 }
 
 export function isPersistentIndexSupported(): boolean {

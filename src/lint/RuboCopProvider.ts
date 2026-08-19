@@ -49,6 +49,19 @@ export class RuboCopProvider implements vscode.CodeActionProvider {
     return (await this.tryRuboCop('rubocop', args, content)) ?? []
   }
 
+  /**
+   * Offenses for a single cop in `content` (stdin-based, so it resolves the
+   * project's .rubocop.yml). Used by the AI Fix verification loop to confirm a
+   * proposed fix actually resolved the reported offense. Returns null when
+   * rubocop can't run at all (not "zero offenses" — that's an empty array).
+   */
+  async offensesForCop(cop: string, filePath: string, content: string): Promise<RuboCopOffense[] | null> {
+    const args = ['--format', 'json', '--only', cop, '--stdin', filePath]
+    const viaBundle = await this.tryRuboCop('bundle', ['exec', 'rubocop', ...args], content)
+    if (viaBundle) {return viaBundle}
+    return (await this.tryRuboCop('rubocop', args, content)) ?? null
+  }
+
   /** Runs one rubocop invocation; returns null (not []) only when it couldn't produce usable output at all, so the caller knows to try the next command instead of accepting "zero offenses". */
   private async tryRuboCop(command: string, args: string[], content: string): Promise<RuboCopOffense[] | null> {
     try {
