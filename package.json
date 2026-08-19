@@ -209,7 +209,120 @@
           "type": "number",
           "default": 200,
           "minimum": 10,
-          "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings) before evicting the least-recently-used entry."
+          "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings, APIDock notes) before evicting the least-recently-used entry."
+        },
+        "railsForge.apidock.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append apidock.com's top-rated community note (real-world gotchas/edge cases) to the hover tooltip for known Rails/Ruby/RSpec methods."
+        },
+        "railsForge.apidock.baseUrl": {
+          "type": "string",
+          "default": "https://apidock.com",
+          "description": "Base URL used for apidock.com lookups. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.apidock.requestTimeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 500,
+          "description": "Timeout for an apidock.com hover lookup, in milliseconds. A timed-out or failed request degrades to no APIDock note rather than blocking the hover."
+        },
+        "railsForge.apidock.cacheTtlHours": {
+          "type": "number",
+          "default": 24,
+          "minimum": 0,
+          "description": "How long a fetched APIDock note is cached before being re-fetched, in hours."
+        },
+        "railsForge.apidock.customMappings": {
+          "type": "array",
+          "default": [],
+          "description": "Extra (or overriding) entries for the hovered-word → apidock.com Class/method lookup used by the APIDock hover note. Each entry overrides any built-in mapping with the same keyword.",
+          "items": {
+            "type": "object",
+            "required": [
+              "keyword",
+              "namespace",
+              "className",
+              "methodName"
+            ],
+            "properties": {
+              "keyword": {
+                "type": "string",
+                "description": "The bare word to match when hovering, e.g. \"has_many\""
+              },
+              "namespace": {
+                "type": "string",
+                "enum": [
+                  "rails",
+                  "ruby",
+                  "rspec"
+                ],
+                "description": "apidock.com top-level namespace"
+              },
+              "className": {
+                "type": "string",
+                "description": "apidock.com class/module path, slash-separated for nested modules, e.g. \"ActiveRecord/Base\""
+              },
+              "methodName": {
+                "type": "string",
+                "description": "Method name as it appears in the apidock.com URL"
+              }
+            }
+          }
+        },
+        "railsForge.devdocs.baseUrl": {
+          "type": "string",
+          "default": "https://devdocs.io",
+          "description": "Base URL loaded by 'RailsForge: Open DevDocs'. Override to point at a self-hosted DevDocs instance."
+        },
+        "railsForge.devdocs.openBesideActiveEditor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the DevDocs panel in a column beside the active editor. When false, it opens in the active editor's own column."
+        },
+        "railsForge.rubydoc.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether 'RailsForge: Open Gem Documentation' and the get_gem_documentation MCP tool are available."
+        },
+        "railsForge.rubydoc.baseUrl": {
+          "type": "string",
+          "default": "https://www.rubydoc.info",
+          "description": "Base URL used for rubydoc.info gem documentation lookups. Override to point at a mirror/internal proxy."
+        },
+        "railsForge.rubydoc.requestTimeoutMs": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 500,
+          "description": "Timeout for a rubydoc.info lookup, in milliseconds."
+        },
+        "railsForge.rubydoc.cacheTtlDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 0,
+          "description": "How long a fetched gem doc entry is cached before being re-fetched, in days. Gem docs are immutable per version, so this can safely be long."
+        },
+        "railsForge.rubydoc.namespaceMappings": {
+          "type": "array",
+          "default": [],
+          "description": "Extra (or overriding) entries for the constant-namespace → gem-name lookup used to resolve 'RailsForge: Open Gem Documentation' and get_gem_documentation. Only needed for a gem whose top-level module doesn't match its snake_cased or lowercased gem name.",
+          "items": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "gem"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "description": "Top-level Ruby constant, e.g. \"ViewComponent\""
+              },
+              "gem": {
+                "type": "string",
+                "description": "Gem name as it appears in Gemfile.lock, e.g. \"view_component\""
+              }
+            }
+          }
         }
       }
     },
@@ -418,6 +531,16 @@
         "command": "railsforge.showSchemaPeek",
         "title": "RailsForge: Peek Model Schema",
         "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.openDevDocs",
+        "title": "RailsForge: Open DevDocs",
+        "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.openRubyDoc",
+        "title": "RailsForge: Open Gem Documentation",
+        "category": "RailsForge"
       }
     ],
     "menus": {
@@ -510,6 +633,12 @@
         "key": "alt+r r",
         "mac": "cmd+alt+r r",
         "when": "railsforge.isRailsApp"
+      },
+      {
+        "command": "railsforge.openDevDocs",
+        "key": "alt+r d",
+        "mac": "cmd+alt+r d",
+        "when": "editorTextFocus"
       }
     ]
   },

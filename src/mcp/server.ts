@@ -24,6 +24,11 @@ import { openIndexDatabase } from '../indexer/database'
 import { isPersistentIndexSupported } from '../indexer/nativeSupport'
 import { PersistentDependencyGraph } from '../indexer/PersistentDependencyGraph'
 import { DuplicateMethodDetector } from '../indexer/DuplicateMethodDetector'
+import { ApiDockClient } from '../docs/ApiDockClient'
+import { ApiDockMethodIndex } from '../docs/ApiDockMethodIndex'
+import { RubyDocProvider } from '../docs/RubyDocProvider'
+import { GemSymbolResolver } from '../docs/GemSymbolResolver'
+import { parseGemfileLock } from '../gems/GemfileLockParser'
 
 const workspaceRoot = process.env.RAILSFORGE_WORKSPACE_ROOT ?? process.cwd()
 
@@ -224,6 +229,102 @@ server.registerTool(
     }
     const detector = new DuplicateMethodDetector(db)
     return { content: [{ type: 'text', text: JSON.stringify(detector.findDuplicates(), null, 2) }] }
+  },
+)
+
+const apiDockClient = new ApiDockClient()
+const apiDockMethodIndex = new ApiDockMethodIndex()
+
+/** apidock.com groups docs under a top-level rails/ruby/rspec namespace; guess it from the class name's prefix. */
+function classifyApiDockNamespace(className: string): 'rails' | 'ruby' | 'rspec' {
+  if (/^RSpec\b/.test(className)) {return 'rspec'}
+  if (/^(ActiveRecord|ActiveModel|ActiveSupport|ActionController|ActionView|ActionMailer|ActionCable|ActiveJob|AbstractController|ActionDispatch|Rails)\b/.test(className)) {return 'rails'}
+  return 'ruby'
+}
+
+/**
+ * Prefers ApiDockMethodIndex's curated mapping (more precise apidock.com class paths, e.g.
+ * "ActiveModel/Validations/ClassMethods" for `validates`), but only when it actually agrees
+ * with the caller's class_name — otherwise falls back to constructing the lookup directly
+ * from class_name/method_name so a method also indexed under a different class isn't
+ * silently misattributed.
+ */
+function resolveApiDockLookup(className: string, methodName: string) {
+  const indexed = apiDockMethodIndex.lookup(methodName)
+  const normalizedClassName = className.replace(/::/g, '/')
+  if (indexed && indexed.className.toLowerCase() === normalizedClassName.toLowerCase()) {
+    return indexed
+  }
+  return {
+    namespace: classifyApiDockNamespace(className),
+    className: normalizedClassName,
+    methodName,
+  }
+}
+
+server.registerTool(
+  'get_method_notes',
+  {
+    title: 'Get APIDock method notes',
+    description: 'Fetches apidock.com\'s community notes and doc summary for a Ruby/Rails/RSpec method — call this before generating code that uses an unfamiliar method, to ground it in real-world gotchas (skipped validations/callbacks, deprecated behavior, surprising defaults) that official docs often miss.',
+    inputSchema: {
+      method_name: z.string().describe('Method name, e.g. "update_attribute"'),
+      class_name: z.string().describe('Class or module name, e.g. "ActiveRecord::Base"'),
+    },
+  },
+  async ({ method_name, class_name }) => {
+    const lookup = resolveApiDockLookup(class_name, method_name)
+    const notes = await apiDockClient.fetchNotes(lookup)
+    if (!notes) {
+      return { content: [{ type: 'text', text: `No APIDock notes found for ${class_name}#${method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(notes, null, 2) }] }
+  },
+)
+
+const rubyDocProvider = new RubyDocProvider()
+
+function loadLockedGemVersions(): Map<string, string> {
+  const lockPath = path.join(workspaceRoot, 'Gemfile.lock')
+  if (!fs.existsSync(lockPath)) {return new Map()}
+  return parseGemfileLock(fs.readFileSync(lockPath, 'utf8'))
+}
+
+server.registerTool(
+  'get_gem_documentation',
+  {
+    title: 'Get gem documentation (rubydoc.info)',
+    description: 'Fetches YARD documentation (signature, description, params, return type) for a class/method in one of this project\'s dependency gems, at the exact version locked in Gemfile.lock — use this before generating code that calls into a gem (Pundit, Sidekiq, dry-rb, etc.) whose API isn\'t in RailsForge\'s own indexed patterns.',
+    inputSchema: {
+      gem_name: z.string().optional().describe('Gem name as it appears in Gemfile.lock, e.g. "pundit". Omitted: resolved from class_name\'s top-level namespace.'),
+      class_name: z.string().describe('Class or module name, e.g. "Pundit" or "Sidekiq::Client"'),
+      method_name: z.string().describe('Method name, e.g. "authorize"'),
+      version: z.string().optional().describe('Exact gem version. Omitted: read from this project\'s Gemfile.lock.'),
+    },
+  },
+  async ({ gem_name, class_name, method_name, version }) => {
+    const lockedVersions = loadLockedGemVersions()
+
+    let gem = gem_name
+    let resolvedVersion = version
+    if (!gem) {
+      const resolved = new GemSymbolResolver(lockedVersions).resolve(class_name)
+      if (!resolved) {
+        return { content: [{ type: 'text', text: `Could not determine which gem defines "${class_name}" — pass gem_name explicitly, or check it's listed in this project's Gemfile.lock.` }] }
+      }
+      gem = resolved.gem
+      resolvedVersion = resolvedVersion ?? resolved.version
+    }
+    resolvedVersion = resolvedVersion ?? lockedVersions.get(gem)
+    if (!resolvedVersion) {
+      return { content: [{ type: 'text', text: `No locked version found for gem "${gem}" in Gemfile.lock, and no version was given.` }] }
+    }
+
+    const entry = await rubyDocProvider.fetchMethod(gem, resolvedVersion, class_name, method_name)
+    if (!entry) {
+      return { content: [{ type: 'text', text: `No rubydoc.info documentation found for ${gem}@${resolvedVersion} ${class_name}#${method_name}.` }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(entry, null, 2) }] }
   },
 )
 

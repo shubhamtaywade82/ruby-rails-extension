@@ -61,6 +61,13 @@ import { GemLensProvider } from './gems/GemLensProvider'
 import { RubyGemsClient } from './gems/RubyGemsClient'
 import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
 import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
+import { ApiDockClient } from './docs/ApiDockClient'
+import { ApiDockMethodIndex } from './docs/ApiDockMethodIndex'
+import { ApiDockHoverProvider } from './docs/ApiDockHoverProvider'
+import { DevDocsPanel } from './docs/DevDocsPanel'
+import { RubyDocProvider, RubyDocEntry } from './docs/RubyDocProvider'
+import { GemSymbolResolver } from './docs/GemSymbolResolver'
+import { parseGemfileLock } from './gems/GemfileLockParser'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 import { Logger } from './util/Logger'
 
@@ -93,6 +100,19 @@ export function activate(context: vscode.ExtensionContext): void {
   const turboFrameNavigator = new TurboFrameNavigator()
   const viewPartialResolver = new ViewPartialResolver()
   const rubyGemsClient = new RubyGemsClient(config.performanceCacheSize)
+  const apiDockClient = new ApiDockClient({
+    cacheSize: config.performanceCacheSize,
+    cacheTtlMs: config.apidockCacheTtlHours * 60 * 60 * 1000,
+    timeoutMs: config.apidockRequestTimeoutMs,
+    baseUrl: config.apidockBaseUrl,
+  })
+  const apiDockMethodIndex = new ApiDockMethodIndex(config.apidockCustomMappings)
+  const rubyDocProvider = new RubyDocProvider({
+    cacheSize: config.performanceCacheSize,
+    cacheTtlMs: config.rubydocCacheTtlDays * 24 * 60 * 60 * 1000,
+    timeoutMs: config.rubydocRequestTimeoutMs,
+    baseUrl: config.rubydocBaseUrl,
+  })
   const testExplorer = new TestExplorerController()
   const serviceExtractor = new ServiceExtractor()
   const queryExtractor = new QueryExtractor()
@@ -203,6 +223,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new SchemaHoverProvider(schemaIndexer)),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, docsEngine),
     vscode.languages.registerHoverProvider({ language: 'ruby', scheme: 'file' }, new GemLensProvider(rubyGemsClient)),
+    vscode.languages.registerHoverProvider(
+      { language: 'ruby', scheme: 'file' },
+      new ApiDockHoverProvider(apiDockClient, apiDockMethodIndex, () => readConfig().apidockEnabled),
+    ),
     vscode.languages.registerDefinitionProvider({ language: 'ruby', scheme: 'file' }, factoryBotResolver),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html'], new StimulusDefinitionProvider(stimulusIndexer)),
     vscode.languages.registerDefinitionProvider(['erb', 'haml', 'slim', 'html', 'ruby'], new TurboFrameDefinitionProvider(turboFrameNavigator)),
@@ -311,6 +335,7 @@ export function activate(context: vscode.ExtensionContext): void {
     schemaIndexer,
     env,
     semanticSearchIndex,
+    rubyDocProvider,
   )
 
   // 5. Register Chat Participant
@@ -699,6 +724,7 @@ function registerCommands(
   schemaIndexer: SchemaIndexer,
   env: ProjectEnvironment,
   semanticSearchIndex: SemanticSearchIndex,
+  rubyDocProvider: RubyDocProvider,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
@@ -1215,7 +1241,83 @@ function registerCommands(
       term.show()
       term.sendText(`rdbg -n -c -- ${buildSingleTestCommand(uri, line, env)}`)
     }),
+    vscode.commands.registerCommand('railsforge.openDevDocs', () => {
+      const editor = vscode.window.activeTextEditor
+      const word = editor?.document.getWordRangeAtPosition(editor.selection.active)
+      const term = word ? editor?.document.getText(word) : undefined
+      const cfg = readConfig()
+      DevDocsPanel.createOrShow(cfg.devdocsBaseUrl, cfg.devdocsOpenBesideActiveEditor, term)
+    }),
+    vscode.commands.registerCommand('railsforge.openRubyDoc', async () => {
+      const cfg = readConfig()
+      const editor = vscode.window.activeTextEditor
+      const symbolRange = editor?.document.getWordRangeAtPosition(editor.selection.active, /[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*[#.][a-z_][A-Za-z0-9_!?]*|[A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*/)
+      const selected = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : undefined
+      const symbol = (selected ?? (symbolRange ? editor!.document.getText(symbolRange) : undefined))?.trim()
+      if (!symbol) {
+        vscode.window.showWarningMessage('RailsForge: Place the cursor on (or select) a class/module name, e.g. "Pundit" or "Sidekiq::Client#push".')
+        return
+      }
+
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      if (!root) {
+        vscode.window.showWarningMessage('RailsForge: Open a workspace folder to look up gem documentation.')
+        return
+      }
+      const lockPath = path.join(root, 'Gemfile.lock')
+      if (!fs.existsSync(lockPath)) {
+        vscode.window.showWarningMessage('RailsForge: No Gemfile.lock found — gem documentation needs an exact locked version.')
+        return
+      }
+      const lockedVersions = parseGemfileLock(fs.readFileSync(lockPath, 'utf8'))
+      const resolver = new GemSymbolResolver(lockedVersions, cfg.rubydocNamespaceMappings)
+
+      const [className, methodName] = symbol.split(/[#.]/, 2)
+      const resolved = resolver.resolve(className)
+      if (!resolved) {
+        vscode.window.showWarningMessage(`RailsForge: Could not determine which gem defines "${className}" — check it's in Gemfile.lock, or add a mapping via railsForge.rubydoc.namespaceMappings.`)
+        return
+      }
+
+      const classPath = className.replace(/::/g, '/')
+      const classUrl = `${cfg.rubydocBaseUrl.replace(/\/$/, '')}/gems/${encodeURIComponent(resolved.gem)}/${resolved.version}/${classPath}`
+
+      // "Class#method" / "Class.method" selections get an in-editor markdown preview
+      // (signature/params/return, from RubyDocProvider); a bare class name just opens
+      // the real page externally — the source of truth for a full class overview.
+      if (methodName) {
+        const entry = await rubyDocProvider.fetchMethod(resolved.gem, resolved.version, className, methodName)
+        if (entry) {
+          const doc = await vscode.workspace.openTextDocument({ content: formatRubyDocEntry(entry), language: 'markdown' })
+          await vscode.window.showTextDocument(doc, { preview: true })
+          return
+        }
+      }
+
+      await vscode.env.openExternal(vscode.Uri.parse(classUrl))
+    }),
   )
+}
+
+function formatRubyDocEntry(entry: RubyDocEntry): string {
+  const lines = [
+    `# ${entry.className}${entry.signature ? `#${entry.signature}` : `#${entry.methodName}`}`,
+    '',
+    `*${entry.gem} v${entry.version} (rubydoc.info)*`,
+    '',
+  ]
+  if (entry.description) {lines.push(entry.description, '')}
+  if (entry.params.length > 0) {
+    lines.push('**Parameters:**', '')
+    for (const p of entry.params) {
+      lines.push(`- \`${p.name}\`${p.type ? ` *(${p.type})*` : ''}${p.description ? ` — ${p.description}` : ''}`)
+    }
+    lines.push('')
+  }
+  if (entry.returnType) {lines.push(`**Returns:** *(${entry.returnType})*`, '')}
+  if (entry.sourceLocation) {lines.push(`**Source:** \`${entry.sourceLocation}\``, '')}
+  lines.push(`[Open full docs](${entry.url})`)
+  return lines.join('\n')
 }
 
 /**
