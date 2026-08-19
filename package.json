@@ -469,6 +469,11 @@
         "category": "RailsForge"
       },
       {
+        "command": "railsforge.copySystemPrompt",
+        "title": "RailsForge: Copy System Prompt for Cline / Continue / Claude Dev",
+        "category": "RailsForge"
+      },
+      {
         "command": "railsforge.showDependencyCycles",
         "title": "RailsForge: Show Circular Dependencies",
         "category": "RailsForge"

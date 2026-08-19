@@ -1,6 +1,6 @@
 /**
- * RailsChatViewProvider - Dedicated Sidebar Webview Chat Interface for RailsForge
- * Provides interactive chat, streaming responses, schema grounding, and 1-click code insertion.
+ * RailsChatViewProvider - Sidebar webview chat with slash-command picker,
+ * @-mention context injection, and token highlighting in the input.
  */
 
 import * as vscode from 'vscode'
@@ -13,7 +13,6 @@ interface WebviewMessage {
   type: string
   prompt?: string
   code?: string
-  action?: string
   mode?: 'replace' | 'insert' | 'create'
   fileName?: string
   includeContext?: boolean
@@ -28,17 +27,14 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     private readonly agent: RailsAgent,
     private readonly schemaIndexer: SchemaIndexer,
     private readonly routesIndexer: RoutesIndexer,
+    private readonly patternNames: () => string[],
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this.extensionUri],
-    }
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [this.extensionUri] }
     webviewView.webview.html = this.getHtml()
     webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => this.handleMessage(msg))
-
     void this.postStatus()
   }
 
@@ -47,21 +43,17 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     await this.processPrompt(prompt, true)
   }
 
-  private async handleMessage(message: WebviewMessage): Promise<void> {
-    switch (message.type) {
+  private async handleMessage(msg: WebviewMessage): Promise<void> {
+    switch (msg.type) {
       case 'webviewReady':
       case 'refreshStatus':
         await this.postStatus()
         break
       case 'sendPrompt':
-        if (message.prompt) {
-          await this.processPrompt(message.prompt, Boolean(message.includeContext))
-        }
+        if (msg.prompt) { await this.processPrompt(msg.prompt, Boolean(msg.includeContext)) }
         break
       case 'applyCode':
-        if (message.code) {
-          await this.applyCode(message.code, message.mode ?? 'replace', message.fileName)
-        }
+        if (msg.code) { await this.applyCode(msg.code, msg.mode ?? 'replace', msg.fileName) }
         break
     }
   }
@@ -70,14 +62,36 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     const isOnline = await this.agent.healthCheck()
     const editor = vscode.window.activeTextEditor
     const currentFile = editor ? vscode.workspace.asRelativePath(editor.document.uri) : 'No file open'
-
     void this.view?.webview.postMessage({
-      type: 'statusUpdate',
-      isOnline,
-      currentFile,
+      type: 'statusUpdate', isOnline, currentFile,
       tablesCount: this.schemaIndexer.getAllTables().length,
       routesCount: this.routesIndexer.getAllRoutes().length,
     })
+  }
+
+  // Expands @mention tokens into grounded context blocks injected above the prompt.
+  private buildMentionContext(prompt: string, activeCode: string): string {
+    const has = (t: string) => new RegExp(`\\${t}\\b`).test(prompt)
+    const parts: string[] = []
+
+    if (has('@schema')) {
+      const rows = this.schemaIndexer.getAllTables()
+        .map(t => `- \`${t.name}\`: ${Array.from(t.columns.values()).map(c => `${c.name}:${c.type}`).join(', ')}`)
+      parts.push(`### @schema (${rows.length} tables):\n${rows.join('\n')}`)
+    }
+    if (has('@routes')) {
+      const rows = this.routesIndexer.getAllRoutes().slice(0, 40)
+        .map(r => `- ${r.verb} \`${r.uriPattern}\` → \`${r.controller}#${r.action}\``)
+      parts.push(`### @routes:\n${rows.join('\n')}`)
+    }
+    if (has('@file') && activeCode) {
+      parts.push(`### @file (active editor):\n\`\`\`ruby\n${activeCode}\n\`\`\``)
+    }
+    if (has('@patterns')) {
+      const names = this.patternNames()
+      parts.push(`### @patterns:\n${names.map(n => `- ${n}`).join('\n')}`)
+    }
+    return parts.join('\n\n')
   }
 
   private async processPrompt(prompt: string, includeContext: boolean): Promise<void> {
@@ -92,64 +106,41 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
       selection = editor.document.getText(editor.selection)
     }
 
-    void this.view?.webview.postMessage({
-      type: 'appendMessage',
-      sender: 'user',
-      text: prompt,
-    })
-
+    void this.view?.webview.postMessage({ type: 'appendMessage', sender: 'user', text: prompt })
     void this.view?.webview.postMessage({ type: 'startStreaming' })
+    Logger.info(`[Chat] "${prompt}"`)
 
-    Logger.info(`[Sidebar Chat] Processing prompt: "${prompt}"`)
+    const mentionCtx = this.buildMentionContext(prompt, activeCode)
+    const cleanPrompt = prompt.replace(/@(file|schema|routes|patterns)\b/g, '').trim()
+    const groundedContent = mentionCtx ? `${mentionCtx}\n\n---\n\nUser: ${cleanPrompt}` : activeCode
 
-    const result = await this.agent.run(prompt, {
-      fileContent: activeCode,
-      fileName,
-      selection,
+    const result = await this.agent.run(cleanPrompt, {
+      fileContent: groundedContent, fileName, selection,
       workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     })
 
-    if (result.success) {
-      Logger.info('[Sidebar Chat] Response received successfully.')
-    } else {
-      Logger.warn(`[Sidebar Chat] Response error: ${result.response}`)
-    }
-
-    void this.view?.webview.postMessage({
-      type: 'appendMessage',
-      sender: 'assistant',
-      text: result.response,
-      success: result.success,
-    })
+    if (!result.success) { Logger.warn(`[Chat] error: ${result.response}`) }
+    void this.view?.webview.postMessage({ type: 'appendMessage', sender: 'assistant', text: result.response, success: result.success })
     void this.view?.webview.postMessage({ type: 'stopStreaming' })
   }
 
   private async applyCode(code: string, mode: 'replace' | 'insert' | 'create', fileName?: string): Promise<void> {
     if (mode === 'create') {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
-      if (!root) {return}
-      const targetName = fileName || await vscode.window.showInputBox({ prompt: 'Enter relative file path (e.g. app/services/my_service.rb)' })
-      if (!targetName) {return}
-      const fullPath = vscode.Uri.file(`${root}/${targetName}`)
+      if (!root) { return }
+      const target = fileName || await vscode.window.showInputBox({ prompt: 'Enter relative file path (e.g. app/services/my_service.rb)' })
+      if (!target) { return }
+      const fullPath = vscode.Uri.file(`${root}/${target}`)
       await vscode.workspace.fs.writeFile(fullPath, Buffer.from(code, 'utf8'))
-      const doc = await vscode.workspace.openTextDocument(fullPath)
-      await vscode.window.showTextDocument(doc)
-      vscode.window.showInformationMessage(`Created ${targetName}`)
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(fullPath))
+      vscode.window.showInformationMessage(`Created ${target}`)
       return
     }
-
     const editor = vscode.window.activeTextEditor
-    if (!editor) {
-      vscode.window.showWarningMessage('No active editor to insert code.')
-      return
-    }
-
-    await editor.edit(editBuilder => {
-      if (mode === 'replace' && !editor.selection.isEmpty) {
-        editBuilder.replace(editor.selection, code)
-      } else {
-        editBuilder.insert(editor.selection.active, code)
-      }
+    if (!editor) { vscode.window.showWarningMessage('No active editor to insert code.'); return }
+    await editor.edit(eb => {
+      if (mode === 'replace' && !editor.selection.isEmpty) { eb.replace(editor.selection, code) }
+      else { eb.insert(editor.selection.active, code) }
     })
     vscode.window.showInformationMessage('✓ Applied code to active editor.')
   }
@@ -163,180 +154,95 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
   <title>RailsForge AI Chat</title>
   <style>
     :root {
-      --bg: var(--vscode-editor-background);
-      --fg: var(--vscode-editor-foreground);
-      --card-bg: var(--vscode-sideBar-background);
-      --accent: #e11d48;
-      --accent-hover: #be123c;
-      --border: var(--vscode-widget-border, #334155);
-      --code-bg: var(--vscode-textCodeBlock-background, #0f172a);
-      --input-bg: var(--vscode-input-background);
+      --bg:var(--vscode-editor-background);--fg:var(--vscode-editor-foreground);
+      --card-bg:var(--vscode-sideBar-background);--accent:#e11d48;--accent-h:#be123c;
+      --border:var(--vscode-widget-border,#334155);--code-bg:var(--vscode-textCodeBlock-background,#0f172a);
+      --input-bg:var(--vscode-input-background);--cmd:#60a5fa;--mention:#34d399;
+      --popup-bg:var(--vscode-editorHoverWidget-background,#1e293b);
+      --popup-bd:var(--vscode-editorHoverWidget-border,#334155);
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--fg);
-      font-family: var(--vscode-font-family, system-ui, sans-serif);
-      font-size: 13px;
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-    }
-    .header {
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--card-bg);
-    }
-    .title-group { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-    .status-pill {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 12px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      background: rgba(16, 185, 129, 0.15);
-      color: #10b981;
-    }
-    .status-pill.offline {
-      background: rgba(239, 68, 68, 0.15);
-      color: #ef4444;
-    }
-    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .quick-actions {
-      padding: 8px 12px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg);
-    }
-    .pill-btn {
-      background: var(--card-bg);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .pill-btn:hover { border-color: var(--accent); color: var(--accent); }
-    .messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .message {
-      padding: 10px 12px;
-      border-radius: 8px;
-      line-height: 1.45;
-      max-width: 95%;
-      word-break: break-word;
-    }
-    .message.user {
-      align-self: flex-end;
-      background: var(--accent);
-      color: white;
-    }
-    .message.assistant {
-      align-self: flex-start;
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-    }
-    .message pre {
-      background: var(--code-bg);
-      padding: 8px;
-      border-radius: 6px;
-      margin: 8px 0;
-      overflow-x: auto;
-      position: relative;
-    }
-    .code-actions {
-      margin-top: 6px;
-      display: flex;
-      gap: 6px;
-    }
-    .code-actions button {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--fg);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 10px;
-      cursor: pointer;
-    }
-    .input-container {
-      padding: 10px 12px;
-      border-top: 1px solid var(--border);
-      background: var(--card-bg);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .context-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
-      color: #94a3b8;
-    }
-    .input-box {
-      width: 100%;
-      min-height: 55px;
-      max-height: 120px;
-      background: var(--input-bg);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 8px;
-      resize: vertical;
-      font-family: inherit;
-      font-size: 12px;
-    }
-    .input-box:focus { outline: none; border-color: var(--accent); }
-    .send-btn {
-      align-self: flex-end;
-      background: var(--accent);
-      color: white;
-      border: none;
-      padding: 6px 14px;
-      border-radius: 6px;
-      font-weight: 500;
-      cursor: pointer;
-    }
-    .send-btn:hover { background: var(--accent-hover); }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--fg);font-family:var(--vscode-font-family,system-ui,sans-serif);
+      font-size:13px;display:flex;flex-direction:column;height:100vh}
+    .header{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;
+      align-items:center;justify-content:space-between;background:var(--card-bg)}
+    .title-group{display:flex;align-items:center;gap:8px;font-weight:600}
+    .status-pill{font-size:11px;padding:2px 8px;border-radius:12px;display:flex;
+      align-items:center;gap:4px;background:rgba(16,185,129,.15);color:#10b981}
+    .status-pill.offline{background:rgba(239,68,68,.15);color:#ef4444}
+    .status-dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+    .quick-actions{padding:8px 12px;display:flex;flex-wrap:wrap;gap:6px;
+      border-bottom:1px solid var(--border);background:var(--bg)}
+    .pill-btn{background:var(--card-bg);color:var(--fg);border:1px solid var(--border);
+      padding:4px 8px;border-radius:6px;font-size:11px;cursor:pointer;transition:all .15s}
+    .pill-btn:hover{border-color:var(--accent);color:var(--accent)}
+    .messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+    .message{padding:10px 12px;border-radius:8px;line-height:1.5;max-width:95%;word-break:break-word}
+    .message.user{align-self:flex-end;background:var(--accent);color:#fff}
+    .message.assistant{align-self:flex-start;background:var(--card-bg);border:1px solid var(--border)}
+    .message pre{background:var(--code-bg);padding:8px;border-radius:6px;margin:8px 0;overflow-x:auto}
+    .code-actions{margin-top:6px;display:flex;gap:6px}
+    .code-actions button{background:var(--bg);border:1px solid var(--border);color:var(--fg);
+      padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer}
+    .input-container{padding:10px 12px;border-top:1px solid var(--border);
+      background:var(--card-bg);display:flex;flex-direction:column;gap:8px}
+    .context-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#94a3b8}
+    .input-wrapper{position:relative}
+    .input-highlight{position:absolute;inset:0;pointer-events:none;z-index:0;
+      padding:8px;font-family:inherit;font-size:12px;line-height:1.5;white-space:pre-wrap;
+      word-break:break-word;overflow:hidden;border-radius:6px;border:1px solid transparent;
+      background:var(--input-bg)}
+    .input-box{position:relative;z-index:1;width:100%;min-height:55px;max-height:120px;
+      background:transparent;color:var(--fg);border:1px solid var(--border);border-radius:6px;
+      padding:8px;resize:vertical;font-family:inherit;font-size:12px;line-height:1.5;caret-color:var(--fg)}
+    .input-box:focus{outline:none;border-color:var(--accent)}
+    .input-box:focus~.input-highlight{border-color:var(--accent)}
+    .tok-cmd{color:var(--cmd);font-weight:600}
+    .tok-mention{color:var(--mention);font-weight:600}
+    .popup{display:none;position:absolute;bottom:calc(100% + 4px);left:0;right:0;
+      background:var(--popup-bg);border:1px solid var(--popup-bd);border-radius:8px;
+      overflow:hidden;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,.4);max-height:220px;overflow-y:auto}
+    .popup.visible{display:block}
+    .popup-header{padding:5px 10px;font-size:10px;color:#64748b;border-bottom:1px solid var(--border)}
+    .popup-item{padding:7px 10px;cursor:pointer;display:flex;align-items:baseline;gap:8px;transition:background .1s}
+    .popup-item:hover,.popup-item.active{background:rgba(225,29,72,.18)}
+    .popup-item-name{font-weight:600;font-size:12px}
+    .popup-item-name.cmd{color:var(--cmd)}
+    .popup-item-name.mention{color:var(--mention)}
+    .popup-item-desc{font-size:11px;color:#94a3b8}
+    .kb-hint{font-size:10px;color:#475569;padding:4px 10px;border-top:1px solid var(--border)}
+    .send-row{display:flex;align-items:center;gap:8px}
+    .send-btn{flex-shrink:0;background:var(--accent);color:#fff;border:none;padding:6px 14px;
+      border-radius:6px;font-weight:500;cursor:pointer}
+    .send-btn:hover{background:var(--accent-h)}
+    .hint-text{font-size:10px;color:#475569}
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="title-group">
-      <span>💎 RailsForge AI</span>
-    </div>
+    <div class="title-group"><span>💎 RailsForge AI</span></div>
     <div id="statusPill" class="status-pill">
-      <span class="status-dot"></span>
-      <span id="statusText">Checking...</span>
+      <span class="status-dot"></span><span id="statusText">Checking…</span>
     </div>
   </div>
 
   <div class="quick-actions">
-    <button class="pill-btn" onclick="sendAction('/service')">⚡ Service Object</button>
-    <button class="pill-btn" onclick="sendAction('/form')">📝 Form Object</button>
-    <button class="pill-btn" onclick="sendAction('/optimize')">🚀 Optimize N+1</button>
-    <button class="pill-btn" onclick="sendAction('/spec')">🧪 Generate Spec</button>
-    <button class="pill-btn" onclick="sendAction('/migrate')">🛡️ Safe Migration</button>
-    <button class="pill-btn" onclick="sendAction('/explain')">🔍 Explain Code</button>
+    <button class="pill-btn" onclick="injectCmd('/service')">⚡ /service</button>
+    <button class="pill-btn" onclick="injectCmd('/form')">📝 /form</button>
+    <button class="pill-btn" onclick="injectCmd('/spec')">🧪 /spec</button>
+    <button class="pill-btn" onclick="injectCmd('/optimize')">🚀 /optimize</button>
+    <button class="pill-btn" onclick="injectCmd('/fix')">🔧 /fix</button>
+    <button class="pill-btn" onclick="injectCmd('/explain')">🔍 /explain</button>
   </div>
 
   <div class="messages" id="messagesContainer">
     <div class="message assistant">
-      👋 Welcome to <strong>RailsForge AI</strong>. I am your grounded Rails assistant. How can I help refactor, optimize, or scaffold your code today?
+      👋 Welcome to <strong>RailsForge AI</strong>.
+      Type <span style="color:var(--cmd);font-weight:600">/command</span> or
+      <span style="color:var(--mention);font-weight:600">@schema</span> /
+      <span style="color:var(--mention);font-weight:600">@routes</span> /
+      <span style="color:var(--mention);font-weight:600">@file</span> to inject context.
+      Press <kbd style="font-size:10px;border:1px solid #475569;border-radius:3px;padding:1px 4px">Ctrl+/</kbd> to open commands.
     </div>
   </div>
 
@@ -345,86 +251,182 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
       <label><input type="checkbox" id="includeContext" checked> Include active file context</label>
       <span id="activeFileLabel">Active File</span>
     </div>
-    <textarea id="promptInput" class="input-box" placeholder="Ask @rails anything... (Enter to send, Shift+Enter for newline)"></textarea>
-    <button class="send-btn" id="sendBtn" onclick="handleSend()">Send</button>
+    <div class="input-wrapper">
+      <div id="popup" class="popup">
+        <div class="popup-header" id="popupHeader">Commands</div>
+        <div id="popupList"></div>
+        <div class="kb-hint">↑↓ navigate &nbsp;·&nbsp; Enter/Tab select &nbsp;·&nbsp; Esc dismiss</div>
+      </div>
+      <textarea id="promptInput" class="input-box"
+        placeholder="Ask anything… /command · @schema · @routes · @file · Ctrl+/ for picker"></textarea>
+      <div class="input-highlight" id="inputHighlight" aria-hidden="true"></div>
+    </div>
+    <div class="send-row">
+      <button class="send-btn" onclick="handleSend()">Send ↵</button>
+      <span class="hint-text">Enter to send &nbsp;·&nbsp; Shift+Enter newline &nbsp;·&nbsp; Ctrl+/ commands</span>
+    </div>
   </div>
 
   <script>
     const vscode = acquireVsCodeApi();
-    const messagesContainer = document.getElementById('messagesContainer');
-    const promptInput = document.getElementById('promptInput');
-    const includeContext = document.getElementById('includeContext');
+    const messagesEl = document.getElementById('messagesContainer');
+    const inputEl    = document.getElementById('promptInput');
+    const hlEl       = document.getElementById('inputHighlight');
+    const includeCtx = document.getElementById('includeContext');
     const statusPill = document.getElementById('statusPill');
     const statusText = document.getElementById('statusText');
-    const activeFileLabel = document.getElementById('activeFileLabel');
+    const activeFileLbl = document.getElementById('activeFileLabel');
+    const popup      = document.getElementById('popup');
+    const popupList  = document.getElementById('popupList');
+    const popupHdr   = document.getElementById('popupHeader');
 
-    window.addEventListener('message', event => {
-      const msg = event.data;
-      switch (msg.type) {
-        case 'statusUpdate':
-          statusPill.className = 'status-pill ' + (msg.isOnline ? '' : 'offline');
-          statusText.textContent = msg.isOnline ? 'Ollama Online' : 'Ollama Offline';
-          activeFileLabel.textContent = msg.currentFile;
-          break;
-        case 'appendMessage':
-          appendMessage(msg.sender, msg.text);
-          break;
+    const COMMANDS = [
+      {n:'/service', d:'Generate or extract a decoupled Service Object'},
+      {n:'/form',    d:'Generate an ActiveModel Form Object'},
+      {n:'/spec',    d:'Generate RSpec / Minitest tests for the active file'},
+      {n:'/fix',     d:'Fix RuboCop, Brakeman, or RSpec failures'},
+      {n:'/explain', d:'Explain active Ruby / Rails code or associations'},
+      {n:'/scaffold',d:'Generate convention-compliant model + migration + controller'},
+      {n:'/optimize',d:'Detect N+1 queries and suggest eager loading'},
+      {n:'/migrate', d:'Generate a safe, reversible migration'},
+    ];
+    const MENTIONS = [
+      {n:'@file',    d:'Inject the full current active file into context'},
+      {n:'@schema',  d:'Inject database schema from db/schema.rb'},
+      {n:'@routes',  d:'Inject route list from config/routes.rb'},
+      {n:'@patterns',d:'Inject names of all indexed service/form/query objects'},
+    ];
+
+    let popupMode = null;
+    let popupItems = [];
+    let activeIdx = 0;
+    let triggerStart = 0;
+
+    // ── Highlight mirror ──
+    function updateHighlight() {
+      const raw = inputEl.value;
+      const html = esc(raw)
+        .replace(/(\\/[a-zA-Z]\\w*)/g, '<span class="tok-cmd">$1</span>')
+        .replace(/(@[a-zA-Z]\\w*)/g,   '<span class="tok-mention">$1</span>');
+      hlEl.innerHTML = html;
+      hlEl.scrollTop = inputEl.scrollTop;
+    }
+
+    // ── Popup ──
+    function showPopup(mode, items, query) {
+      const filtered = items.filter(i => i.n.toLowerCase().startsWith(query.toLowerCase()));
+      if (!filtered.length) { hidePopup(); return; }
+      popupMode = mode; popupItems = filtered; activeIdx = 0;
+      popupHdr.textContent = mode === 'cmd' ? 'Commands' : 'Context Mentions';
+      popupList.innerHTML = filtered.map((item, i) =>
+        '<div class="popup-item' + (i===0?' active':'') + '" data-idx="'+i+'">' +
+          '<span class="popup-item-name '+(mode==='cmd'?'cmd':'mention')+'">'+esc(item.n)+'</span>' +
+          '<span class="popup-item-desc">'+esc(item.d)+'</span>' +
+        '</div>'
+      ).join('');
+      popup.classList.add('visible');
+    }
+    function hidePopup() { popup.classList.remove('visible'); popupMode=null; popupItems=[]; }
+
+    function setActive(idx) {
+      document.querySelectorAll('#popupList .popup-item').forEach((el,i)=>el.classList.toggle('active',i===idx));
+      activeIdx = idx;
+    }
+    function selectItem(idx) {
+      const item = popupItems[idx];
+      if (!item) return;
+      const val = inputEl.value;
+      const before = val.slice(0, triggerStart);
+      const after  = val.slice(inputEl.selectionStart);
+      inputEl.value = before + item.n + ' ' + after;
+      const pos = (before + item.n + ' ').length;
+      inputEl.setSelectionRange(pos, pos);
+      updateHighlight(); hidePopup(); inputEl.focus();
+    }
+
+    // ── Input events ──
+    inputEl.addEventListener('input', () => {
+      updateHighlight();
+      const val = inputEl.value;
+      const cur = inputEl.selectionStart ?? 0;
+      const ws  = val.lastIndexOf(' ', cur-1)+1;
+      const word = val.slice(ws, cur);
+      triggerStart = ws;
+      if (word.startsWith('/'))      showPopup('cmd',     COMMANDS, word);
+      else if (word.startsWith('@')) showPopup('mention', MENTIONS, word);
+      else hidePopup();
+    });
+    inputEl.addEventListener('scroll', () => { hlEl.scrollTop = inputEl.scrollTop; });
+
+    inputEl.addEventListener('keydown', e => {
+      if (popup.classList.contains('visible')) {
+        if (e.key==='ArrowDown')         { e.preventDefault(); setActive((activeIdx+1)%popupItems.length); return; }
+        if (e.key==='ArrowUp')           { e.preventDefault(); setActive((activeIdx-1+popupItems.length)%popupItems.length); return; }
+        if (e.key==='Enter'||e.key==='Tab') { e.preventDefault(); selectItem(activeIdx); return; }
+        if (e.key==='Escape')            { hidePopup(); return; }
+      }
+      if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); return; }
+      if ((e.ctrlKey||e.metaKey) && e.key==='/') {
+        e.preventDefault();
+        const cur = inputEl.selectionStart ?? 0;
+        inputEl.value = inputEl.value.slice(0,cur) + '/' + inputEl.value.slice(cur);
+        inputEl.setSelectionRange(cur+1, cur+1);
+        triggerStart = cur; updateHighlight(); showPopup('cmd', COMMANDS, '/');
       }
     });
 
-    function sendAction(cmd) {
-      promptInput.value = cmd + ' ';
-      promptInput.focus();
+    popupList.addEventListener('click', e => {
+      const el = e.target.closest('.popup-item');
+      if (el) selectItem(Number(el.dataset.idx));
+    });
+
+    function injectCmd(cmd) {
+      inputEl.value = cmd + ' '; inputEl.focus();
+      triggerStart = 0; updateHighlight(); showPopup('cmd', COMMANDS, cmd);
     }
 
+    // ── Send ──
     function handleSend() {
-      const text = promptInput.value.trim();
+      const text = inputEl.value.trim();
       if (!text) return;
-      vscode.postMessage({
-        type: 'sendPrompt',
-        prompt: text,
-        includeContext: includeContext.checked
-      });
-      promptInput.value = '';
+      hidePopup();
+      vscode.postMessage({ type:'sendPrompt', prompt:text, includeContext:includeCtx.checked });
+      inputEl.value = ''; updateHighlight();
     }
 
-    promptInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
+    // ── Messages from extension host ──
+    window.addEventListener('message', event => {
+      const msg = event.data;
+      if (msg.type==='statusUpdate') {
+        statusPill.className = 'status-pill ' + (msg.isOnline ? '' : 'offline');
+        statusText.textContent = msg.isOnline ? 'Ollama Online' : 'Offline';
+        activeFileLbl.textContent = msg.currentFile;
+      } else if (msg.type==='appendMessage') {
+        appendMessage(msg.sender, msg.text);
       }
     });
 
     function appendMessage(sender, text) {
       const div = document.createElement('div');
       div.className = 'message ' + sender;
-      
-      const pattern = new RegExp('\\x60\\x60\\x60([a-zA-Z0-9_-]*)\\\\n([\\\\s\\\\S]*?)\\x60\\x60\\x60', 'g');
-      const formatted = text.replace(pattern, function(match, lang, code) {
-        const escaped = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const encoded = encodeURIComponent(code);
-        return '<pre><code>' + escaped + '</code><div class="code-actions">' +
-          '<button onclick="copyCode(\\'' + encoded + '\\')">📋 Copy</button>' +
-          '<button onclick="insertCode(\\'' + encoded + '\\')">📥 Insert</button>' +
-        '</div></pre>';
-      }).replace(/\\n/g, '<br/>');
-
-      div.innerHTML = formatted;
-      messagesContainer.appendChild(div);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      const html = esc(text)
+        .replace(/\`\`\`([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
+          const raw = code.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+          const enc = encodeURIComponent(raw);
+          return '<pre><code>'+esc(raw)+'</code><div class="code-actions">'+
+            '<button onclick="copyCode('+enc+')">📋 Copy</button>'+
+            '<button onclick="insertCode('+enc+')">📥 Insert</button>'+
+            '</div></pre>';
+        })
+        .replace(/\\n/g, '<br>');
+      div.innerHTML = html;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    function copyCode(encoded) {
-      navigator.clipboard.writeText(decodeURIComponent(encoded));
-    }
-
-    function insertCode(encoded) {
-      vscode.postMessage({
-        type: 'applyCode',
-        code: decodeURIComponent(encoded),
-        mode: 'insert'
-      });
-    }
+    function copyCode(enc) { navigator.clipboard.writeText(decodeURIComponent(enc)); }
+    function insertCode(enc) { vscode.postMessage({ type:'applyCode', code:decodeURIComponent(enc), mode:'insert' }); }
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
     vscode.postMessage({ type: 'webviewReady' });
   </script>

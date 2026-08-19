@@ -54,7 +54,7 @@ import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
 import { PersistentIndexManager } from './indexer/PersistentIndexManager'
 import { findDuplicateCallSites } from './refactor/DuplicateCallSiteFinder'
 import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerator'
-import { buildCursorRulesContent } from './mcp/CursorRulesGenerator'
+import { buildCursorRulesContent, buildSystemPromptMarkdown } from './mcp/CursorRulesGenerator'
 import { EmbeddingClient } from './search/EmbeddingClient'
 import { SemanticSearchIndex } from './search/SemanticSearchIndex'
 import { EndwiseProvider } from './editing/EndwiseProvider'
@@ -219,6 +219,7 @@ export function activate(context: vscode.ExtensionContext): void {
     agent,
     schemaIndexer,
     routesIndexer,
+    () => projectPatternIndexer.getAllPatterns().map(p => `${p.type}/${p.name}`),
   )
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('railsforge.chatView', chatViewProvider),
@@ -1063,6 +1064,27 @@ function registerCommands(
             ? 'RailsForge: Exported .cursor/rules/railsforge.mdc. (MCP server not bundled in this build — skipped registration.)'
             : 'RailsForge: Exported .cursor/rules/railsforge.mdc. (railsForge.mcp.enabled is false — skipped MCP server registration.)',
       )
+    }),
+    vscode.commands.registerCommand('railsforge.copySystemPrompt', async () => {
+      const content = buildSystemPromptMarkdown({
+        rubyVersion: env.rubyVersion,
+        railsVersion: env.hasRails ? env.railsVersion : undefined,
+        hasRails: env.hasRails,
+        projectType: env.projectType,
+        tables: schemaIndexer.getAllTables(),
+        routes: routes.getAllRoutes(),
+        patterns: projectPatternIndexer.getAllPatterns(),
+        mcpServerAvailable: false,
+      })
+      await vscode.env.clipboard.writeText(content)
+      vscode.window.showInformationMessage(
+        'RailsForge: System prompt copied to clipboard. Paste it into Cline / Continue / Claude Dev system prompt settings.',
+        'View'
+      ).then(choice => {
+        if (choice !== 'View') { return }
+        void vscode.workspace.openTextDocument({ content, language: 'markdown' })
+          .then(doc => vscode.window.showTextDocument(doc))
+      })
     }),
     vscode.commands.registerCommand('railsforge.applyAiFix', async (uri: vscode.Uri, range: vscode.Range, diagnosticMessage: string) => {
       const document = await vscode.workspace.openTextDocument(uri)
