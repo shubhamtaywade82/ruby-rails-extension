@@ -15,6 +15,7 @@
  */
 
 import { LruCache } from '../util/LruCache'
+import { stripHtmlTags, decodeHtmlEntities, normalizeWhitespace } from '../util/HtmlText'
 
 export type ApiDockNamespace = 'rails' | 'ruby' | 'rspec'
 
@@ -157,14 +158,5 @@ function extractSection(html: string, startPatterns: RegExp[], endPatterns: RegE
 }
 
 function stripHtml(fragment: string): string {
-  return fragment
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, '\'')
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeWhitespace(decodeHtmlEntities(stripHtmlTags(fragment)))
 }

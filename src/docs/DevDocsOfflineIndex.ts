@@ -17,6 +17,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { stripHtmlTags, decodeHtmlEntities } from '../util/HtmlText'
 
 interface RawDevDocsEntry {
   name: string
@@ -188,25 +189,12 @@ function escapeRegExp(value: string): string {
 }
 
 function stripTags(fragment: string): string {
-  return decodeEntities(fragment.replace(/<[^>]*>/g, ' '))
+  return decodeHtmlEntities(stripHtmlTags(fragment))
 }
 
 /** Same tag-stripping as `stripTags`, but keeps original newlines/indentation intact — for `<pre>` source code, where collapsing whitespace would corrupt it. */
 function stripTagsPreserveWhitespace(fragment: string): string {
-  return decodeEntities(fragment.replace(/<[^>]*>/g, ''))
-}
-
-function decodeEntities(text: string): string {
-  return text
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, '\'')
-    .replace(/&quot;/g, '"')
-    .replace(/&mdash;/g, '—')
-    .replace(/&ndash;/g, '–')
-    .replace(/&copy;/g, '©')
+  return decodeHtmlEntities(stripHtmlTags(fragment, ''))
 }
 
 function normalizeText(text: string): string {

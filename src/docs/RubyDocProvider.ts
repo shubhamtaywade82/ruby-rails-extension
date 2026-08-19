@@ -15,6 +15,7 @@
  */
 
 import { LruCache } from '../util/LruCache'
+import { stripHtmlTags, decodeHtmlEntities } from '../util/HtmlText'
 
 export interface RubyDocParam {
   name: string
@@ -188,20 +189,11 @@ function escapeRegExp(value: string): string {
 }
 
 function stripHtml(fragment: string): string {
-  return fragment
-    // Inline formatting tags (<strong>authorize</strong>(args) in a signature) drop out
-    // with no replacement so they don't introduce a spurious space before "(args)";
-    // everything else (block-level structure) becomes a space, same as ApiDockClient.
-    .replace(/<\/?(?:strong|tt|em|b|i)\b[^>]*>/g, '')
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, '\'')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x21d2;/g, '⇒')
-    .replace(/&mdash;/g, '—')
+  // Inline formatting tags (<strong>authorize</strong>(args) in a signature) drop out
+  // with no replacement so they don't introduce a spurious space before "(args)";
+  // everything else (block-level structure) becomes a space, same as ApiDockClient.
+  const withoutInlineTags = fragment.replace(/<\/?(?:strong|tt|em|b|i)\b[^>]*>/g, '')
+  return decodeHtmlEntities(stripHtmlTags(withoutInlineTags))
 }
 
 function normalizeText(text: string): string {
