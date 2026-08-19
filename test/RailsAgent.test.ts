@@ -64,6 +64,60 @@ describe('RailsAgent provider dispatch', () => {
     expect(JSON.parse(init.body as string).model).toBe('gpt-4o-mini')
   })
 
+  it('sends the shared AI knobs (temperature, max_tokens) to cloud providers and never the Ollama-only ones', async () => {
+    const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({
+      provider: 'openai',
+      openaiModel: 'gpt-oss:120b',
+      openaiBaseUrl: 'https://openrouter.ai/api',
+      temperature: 0.5,
+      maxTokens: 4096,
+      ollamaNumCtx: 16384,
+      ollamaKeepAlive: '5m',
+      getApiKey: async () => 'sk-test',
+    })
+    await agent.run('hello', {})
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions')
+    const body = JSON.parse(init.body as string)
+    expect(body.model).toBe('gpt-oss:120b')
+    expect(body.temperature).toBe(0.5)
+    expect(body.max_tokens).toBe(4096)
+    // Ollama-only knobs must never leak into a cloud request.
+    expect(body.num_ctx).toBeUndefined()
+    expect(body.num_predict).toBeUndefined()
+    expect(body.repeat_penalty).toBeUndefined()
+    expect(body.min_p).toBeUndefined()
+    expect(body.keep_alive).toBeUndefined()
+  })
+
+  it('sends num_ctx, num_predict, repeat_penalty, min_p and keep_alive to Ollama with configured values', async () => {
+    const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({
+      temperature: 0.1,
+      maxTokens: 512,
+      ollamaNumCtx: 16384,
+      ollamaKeepAlive: '5m',
+      ollamaRepeatPenalty: 1.2,
+      ollamaMinP: 0.1,
+    })
+    await agent.run('hello', {})
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init.body as string)
+    expect(body.options.temperature).toBe(0.1)
+    expect(body.options.num_predict).toBe(512)
+    expect(body.options.num_ctx).toBe(16384)
+    expect(body.options.repeat_penalty).toBe(1.2)
+    expect(body.options.min_p).toBe(0.1)
+    expect(body.keep_alive).toBe('5m')
+  })
+
   it('fails clearly when provider is openai and no key is configured, without calling fetch', async () => {
     // No cassette needed: this path returns before making any request.
     const fetchMock = vi.fn()
@@ -120,7 +174,7 @@ describe('RailsAgent provider dispatch', () => {
   })
 
   it(
-    'suggestCodeFix tells the model to stay consistent with sibling methods and never close a caller-owned resource',
+    'suggestFix tells the model to stay consistent with sibling methods and never close a caller-owned resource',
     async () => {
       // Regression test: applying the AI fix to two methods that share a resource (e.g. two
       // methods each opening a Redis connection) independently, one at a time, previously
@@ -132,7 +186,7 @@ describe('RailsAgent provider dispatch', () => {
       vi.stubGlobal('fetch', fetchMock)
 
       const agent = buildAgent({})
-      await agent.suggestCodeFix('def foo\n  1\nend', 'Method too short', {
+      await agent.suggestFix('def foo\n  1\nend', 'Method too short', {
         fileContent: 'class Foo\n  def foo\n    1\n  end\nend',
       })
 
@@ -145,7 +199,7 @@ describe('RailsAgent provider dispatch', () => {
     },
   )
 
-  it('suggestCodeFix accepts module header documentation fixes without triggering the safety guard', async () => {
+  it('suggestFix accepts module header documentation fixes without triggering the safety guard', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -157,12 +211,161 @@ describe('RailsAgent provider dispatch', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const agent = buildAgent({})
-    const fix = await agent.suggestCodeFix(
+    const fix = await agent.suggestFix(
       'module MyToolbox::StringUtils',
       'Style/Documentation: Missing top-level documentation comment for `module MyToolbox::StringUtils`.',
       { fileContent: 'module MyToolbox::StringUtils\n  def self.slug(s)\n    s.downcase\n  end\nend' },
     )
 
-    expect(fix).toBe('# Top-level documentation for StringUtils\nmodule MyToolbox::StringUtils')
+    expect(fix).toEqual({ type: 'snippet', code: '# Top-level documentation for StringUtils\nmodule MyToolbox::StringUtils' })
+  })
+
+  it('suggestFix truncates a whole-class response down to the header for documentation fixes', async () => {
+    // Regression test: models frequently answer a Style/Documentation fix on a
+    // single-line class header by returning the ENTIRE class (or file). The
+    // replacement range only covers the header line, so the body would duplicate
+    // the file — the agent must keep only the comment/header portion instead of
+    // rejecting the fix outright (which previously made Style/Documentation
+    // fixes always report "Fix unavailable").
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: {
+          content: [
+            '# Represents an order placed by a customer.',
+            'class Order < ApplicationRecord',
+            '  belongs_to :customer',
+            '  has_many :line_items',
+            'end',
+          ].join('\n'),
+        },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    const fix = await agent.suggestFix(
+      'class Order < ApplicationRecord',
+      'Style/Documentation: Missing top-level documentation comment for `class Order`.',
+      { fileContent: 'class Order < ApplicationRecord\n  belongs_to :customer\n  has_many :line_items\nend' },
+    )
+
+    expect(fix).toEqual({ type: 'snippet', code: '# Represents an order placed by a customer.\nclass Order < ApplicationRecord' })
+  })
+
+  it('suggestFix keeps the original header when a comment-only response would delete the class declaration', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: {
+          content: '# Comment only, no class declaration returned',
+        },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    const fix = await agent.suggestFix(
+      'class Order < ApplicationRecord',
+      'Style/Documentation: Missing top-level documentation comment for `class Order`.',
+      { fileContent: 'class Order < ApplicationRecord\nend' },
+    )
+
+    expect(fix).toEqual({ type: 'snippet', code: '# Comment only, no class declaration returned\nclass Order < ApplicationRecord' })
+  })
+
+  it('suggestFix parses a unified diff response into a patch proposal', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: {
+          content: [
+            '--- a/app/models/order.rb',
+            '+++ b/app/models/order.rb',
+            '@@ -1,3 +1,4 @@',
+            ' class Order < ApplicationRecord',
+            '+  scope :recent, -> { where(created_at: 1.day.ago..) }',
+            ' end',
+          ].join('\n'),
+        },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    const fix = await agent.suggestFix(
+      'class Order < ApplicationRecord\nend',
+      'Lint/MissingScope',
+      { fileContent: 'class Order < ApplicationRecord\nend' },
+    )
+
+    expect(fix).toEqual({
+      type: 'patch',
+      hunks: [
+        {
+          file: 'app/models/order.rb',
+          oldStart: 0,
+          oldLines: ['class Order < ApplicationRecord', 'end'],
+          newLines: ['class Order < ApplicationRecord', '  scope :recent, -> { where(created_at: 1.day.ago..) }', 'end'],
+        },
+      ],
+    })
+  })
+
+  it('suggestFix retries with a strict format demand when the first response looks like a diff but fails to parse', async () => {
+    // Regression test: local models sometimes respond with prose + diff-like
+    // fragments that fail parsing. Previously this fell through to the snippet
+    // path, splicing diff text into the file and producing invalid Ruby — the
+    // exact "response would produce invalid Ruby syntax" rejection in the logs.
+    // The first malformed response must trigger a corrective retry, not a snippet.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ message: { content: 'Here is the fix:\n@@ -1,1 +1,1 @@\n-[:create, :update]\n+%i[create update]\n`' } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ message: { content: ['@@ -1,1 +1,1 @@', '-[:create, :update]', '+%i[create update]'].join('\n') } }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    const fix = await agent.suggestFix('[:create, :update]', 'Style/SymbolArray', { fileContent: '[:create, :update]' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [, init] = fetchMock.mock.calls[1]
+    const prompt = (JSON.parse(init.body as string).messages as Array<{ role: string; content: string }>)
+      .find(m => m.role === 'user')?.content
+    expect(prompt).toContain('was not a valid unified diff')
+    expect(fix).toEqual({
+      type: 'patch',
+      hunks: [
+        {
+          file: null,
+          oldStart: 0,
+          oldLines: ['[:create, :update]'],
+          newLines: ['%i[create update]'],
+        },
+      ],
+    })
+  })
+
+  it('suggestFix carries Ruby syntax feedback into the corrected request', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        message: { content: ['@@ -1,1 +1,1 @@', '-foo', '+bar'].join('\n') },
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({})
+    await agent.suggestFix('foo', 'Lint/X', { fileContent: 'foo' }, 'syntax error: unexpected end-of-input')
+
+    const [, init] = fetchMock.mock.calls[0]
+    const prompt = (JSON.parse(init.body as string).messages as Array<{ role: string; content: string }>)
+      .find(m => m.role === 'user')?.content
+    expect(prompt).toContain('unexpected end-of-input')
+    expect(prompt).toContain('Return a corrected minimal unified diff')
   })
 })

@@ -89,7 +89,7 @@ function loadRoutesIndexer(): RoutesIndexer {
   const indexer = new RoutesIndexer()
   const routesPath = path.join(workspaceRoot, 'config', 'routes.rb')
   if (fs.existsSync(routesPath)) {
-    indexer.parseRoutesTable(fs.readFileSync(routesPath, 'utf8'))
+    indexer.parseRoutesDsl(fs.readFileSync(routesPath, 'utf8'))
   }
   return indexer
 }

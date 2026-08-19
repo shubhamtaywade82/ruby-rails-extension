@@ -32,3 +32,99 @@ describe('RoutesIndexer', () => {
     expect(searchResults.length).toBe(6)
   })
 })
+
+describe('RoutesIndexer DSL parsing', () => {
+  it('parses routes.rb DSL with resources, nesting, namespaces and member blocks', () => {
+    const indexer = new RoutesIndexer()
+    indexer.parseRoutesDsl(`
+Rails.application.routes.draw do
+  root "articles#index"
+
+  resources :users do
+    resources :articles, only: [:index, :show]
+  end
+
+  resources :articles do
+    resources :comments, only: [:create, :destroy]
+    member do
+      post :publish
+      post :archive
+    end
+  end
+
+  namespace :admin do
+    resources :dashboard, only: [:index]
+    resources :users
+  end
+end
+`)
+
+    const routes = indexer.getAllRoutes()
+    expect(routes.length).toBe(29)
+
+    const find = (verb: string, uri: string) => routes.find(r => r.verb === verb && r.uriPattern === uri)
+    expect(find('GET', '/')).toMatchObject({ controller: 'articles', action: 'index' })
+    expect(find('GET', '/users')).toMatchObject({ controller: 'users', action: 'index' })
+    expect(find('GET', '/users/:id/edit')).toMatchObject({ controller: 'users', action: 'edit' })
+    expect(find('GET', '/users/:user_id/articles')).toMatchObject({ controller: 'articles', action: 'index' })
+    expect(find('GET', '/users/:user_id/articles/:id')).toMatchObject({ controller: 'articles', action: 'show' })
+    expect(find('POST', '/articles/:id/publish')).toMatchObject({ controller: 'articles', action: 'publish' })
+    expect(find('POST', '/articles/:id/archive')).toMatchObject({ controller: 'articles', action: 'archive' })
+    expect(find('POST', '/articles/:article_id/comments')).toMatchObject({ controller: 'comments', action: 'create' })
+    expect(find('DELETE', '/articles/:article_id/comments/:id')).toMatchObject({ controller: 'comments', action: 'destroy' })
+    expect(find('GET', '/admin/users')).toMatchObject({ controller: 'admin/users', action: 'index' })
+    expect(find('GET', '/admin/dashboard')).toMatchObject({ controller: 'admin/dashboard', action: 'index' })
+
+    expect(find('GET', '/articles/:article_id/comments')).toBeUndefined()
+    expect(find('GET', '/admin/dashboard/:id')).toBeUndefined()
+  })
+
+  it('parses namespaced API routes and explicit verb routes', () => {
+    const indexer = new RoutesIndexer()
+    indexer.parseRoutesDsl(`
+Rails.application.routes.draw do
+  namespace :api do
+    namespace :v1 do
+      resources :products do
+        member do
+          post :restock
+        end
+      end
+      resources :orders, only: [:index, :show, :create]
+    end
+  end
+  get "/health", to: "health#check"
+end
+`)
+
+    const routes = indexer.getAllRoutes()
+    expect(routes.length).toBe(12)
+
+    const find = (verb: string, uri: string) => routes.find(r => r.verb === verb && r.uriPattern === uri)
+    expect(find('GET', '/api/v1/products')).toMatchObject({ controller: 'api/v1/products', action: 'index' })
+    expect(find('POST', '/api/v1/products/:id/restock')).toMatchObject({ controller: 'api/v1/products', action: 'restock' })
+    expect(find('POST', '/api/v1/orders')).toMatchObject({ controller: 'api/v1/orders', action: 'create' })
+    expect(find('GET', '/health')).toMatchObject({ controller: 'health', action: 'check' })
+    expect(find('DELETE', '/api/v1/orders/:id')).toBeUndefined()
+  })
+
+  it('parses singular resources and scope blocks', () => {
+    const indexer = new RoutesIndexer()
+    indexer.parseRoutesDsl(`
+Rails.application.routes.draw do
+  resource :profile
+  scope "/api", module: :admin do
+    get "/stats", to: "reports#index"
+  end
+end
+`)
+
+    const routes = indexer.getAllRoutes()
+    expect(routes.length).toBe(7)
+
+    const find = (verb: string, uri: string) => routes.find(r => r.verb === verb && r.uriPattern === uri)
+    expect(find('GET', '/profile')).toMatchObject({ controller: 'profiles', action: 'show' })
+    expect(find('PATCH', '/profile')).toMatchObject({ controller: 'profiles', action: 'update' })
+    expect(find('GET', '/api/stats')).toMatchObject({ controller: 'admin/reports', action: 'index' })
+  })
+})

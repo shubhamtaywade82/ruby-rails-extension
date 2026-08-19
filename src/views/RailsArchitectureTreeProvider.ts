@@ -5,7 +5,7 @@
 import * as vscode from 'vscode'
 import { ProjectEnvironment, formatProjectType } from '../environment/EnvironmentDetector'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
-import { RoutesIndexer } from '../rails/RoutesIndexer'
+import { RoutesIndexer, RailsRoute } from '../rails/RoutesIndexer'
 import { StimulusIndexer } from '../hotwire/StimulusIndexer'
 
 export class ArchitectureItem extends vscode.TreeItem {
@@ -54,6 +54,10 @@ export class RailsArchitectureTreeProvider implements vscode.TreeDataProvider<Ar
 
     if (element.label === 'Routes & Hotwire') {
       return Promise.resolve(this.getRoutesHotwireItems())
+    }
+
+    if (element.contextValue === 'routeGroup') {
+      return Promise.resolve(this.getRoutesForController(String(element.label)))
     }
 
     return Promise.resolve([])
@@ -107,8 +111,26 @@ export class RailsArchitectureTreeProvider implements vscode.TreeDataProvider<Ar
 
   private getRoutesHotwireItems(): ArchitectureItem[] {
     const items: ArchitectureItem[] = [
-      new ArchitectureItem(`Total Routes: ${this.routesIndexer.getAllRoutes().length}`, vscode.TreeItemCollapsibleState.None),
+      new ArchitectureItem(`Total Routes: ${this.routesIndexer.getAllRoutes().length}`, vscode.TreeItemCollapsibleState.None, undefined, new vscode.ThemeIcon('symbol-namespace')),
     ]
+
+    const byController = new Map<string, RailsRoute[]>()
+    for (const route of this.routesIndexer.getAllRoutes()) {
+      const list = byController.get(route.controller) ?? []
+      list.push(route)
+      byController.set(route.controller, list)
+    }
+
+    for (const [controller, routes] of [...byController.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const group = new ArchitectureItem(
+        controller,
+        vscode.TreeItemCollapsibleState.Collapsed,
+        `${routes.length} routes`,
+        new vscode.ThemeIcon('symbol-method'),
+      )
+      group.contextValue = 'routeGroup'
+      items.push(group)
+    }
 
     for (const c of this.stimulusIndexer.getAllControllers()) {
       items.push(
@@ -122,5 +144,16 @@ export class RailsArchitectureTreeProvider implements vscode.TreeDataProvider<Ar
     }
 
     return items
+  }
+
+  private getRoutesForController(controller: string): ArchitectureItem[] {
+    return this.routesIndexer.getAllRoutes()
+      .filter(r => r.controller === controller)
+      .map(r => new ArchitectureItem(
+        `${r.verb} ${r.uriPattern}`,
+        vscode.TreeItemCollapsibleState.None,
+        r.action,
+        new vscode.ThemeIcon('symbol-method'),
+      ))
   }
 }

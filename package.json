@@ -98,6 +98,30 @@
           ],
           "description": "Glob patterns excluded from every RailsForge workspace scan (schema/route/pattern indexing, AST index, live re-indexing on save). Set at the workspace level (.vscode/settings.json) to exclude project-specific directories (e.g. a vendored engine's dummy app, a generated docs folder) on top of, or instead of, the defaults. The RailsForge MCP server (run outside VS Code) also reads this from the workspace's .vscode/settings.json."
         },
+        "railsForge.log.level": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "enumDescriptions": [
+            "Only errors (least verbose)",
+            "Errors and warnings",
+            "Errors, warnings, and normal progress (default)",
+            "Adds AI request/response summaries, latency, and diff-parse results",
+            "Adds raw HTTP request/response payloads sent to the AI provider — these contain your code/prompts, so be careful before sharing logs"
+          ],
+          "default": "info",
+          "description": "Verbosity of the RailsForge output channel (View → Output → RailsForge) and the railsForge.log.file mirror. Applies immediately on change — no window reload needed."
+        },
+        "railsForge.log.file": {
+          "type": "boolean",
+          "default": false,
+          "description": "Mirror every log line to <workspace>/.railsforge/railsforge.log (the .railsforge/ directory is already gitignored). Intended for capturing issues to attach to a bug report; the file grows unbounded, so delete it when you're done."
+        },
         "railsForge.projectType.override": {
           "type": "string",
           "enum": [
@@ -170,6 +194,30 @@
           "default": "nomic-embed-text",
           "description": "Ollama model used for RailsForge: Semantic Search (must be pulled separately, e.g. `ollama pull nomic-embed-text`). Search falls back to keyword matching if this model or Ollama itself is unavailable."
         },
+        "railsForge.ollama.numCtx": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 2048,
+          "description": "Ollama context window (num_ctx) for the @rails agent. Small local models default to ~2048-4096, which truncates RailsForge's system prompt + file content and causes malformed AI fixes; 8192 fits the prompt and diff-format instructions. Raise to 16384 for files over ~200 lines. Only sent to Ollama; ignored for cloud providers."
+        },
+        "railsForge.ollama.keepAlive": {
+          "type": "string",
+          "default": "30m",
+          "description": "How long the Ollama model stays loaded in memory after a request (keep_alive). Keeps the model resident so AI-fix and chat calls skip the cold-start load. Only sent to Ollama; ignored for cloud providers."
+        },
+        "railsForge.ollama.repeatPenalty": {
+          "type": "number",
+          "default": 1.15,
+          "minimum": 1,
+          "description": "Ollama repeat penalty for the @rails agent. Suppresses the repetition loops small local models fall into; 1.0 disables it. Only sent to Ollama; ignored for cloud providers."
+        },
+        "railsForge.ollama.minP": {
+          "type": "number",
+          "default": 0.05,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Ollama min_p filter for the @rails agent. Keeps high-probability tokens and drops low-probability noise, improving output quality on small models. Only sent to Ollama; ignored for cloud providers."
+        },
         "railsForge.ai.provider": {
           "type": "string",
           "enum": [
@@ -190,10 +238,34 @@
           "default": "gpt-4o-mini",
           "description": "OpenAI model used when railsForge.ai.provider is 'openai'"
         },
+        "railsForge.ai.openai.baseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com",
+          "description": "Base URL for OpenAI-compatible endpoints. Point this at OpenRouter, a self-hosted vLLM, or any OSS model gateway (e.g. oss-gpt 120b) that speaks the /v1/chat/completions protocol. The agent appends /v1/chat/completions automatically."
+        },
         "railsForge.ai.anthropic.model": {
           "type": "string",
           "default": "claude-sonnet-4-5",
           "description": "Anthropic model used when railsForge.ai.provider is 'anthropic'"
+        },
+        "railsForge.ai.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for the @rails agent, applied to every provider. 0.2 keeps AI fixes deterministic (good for diff generation); raise toward 1.0 for more creative chat answers."
+        },
+        "railsForge.ai.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "minimum": 64,
+          "description": "Maximum generated tokens per response. Sent as num_predict to Ollama and max_tokens to cloud providers. For a 4B local model this caps rambling and cuts round time; cloud models can handle a larger cap (e.g. 4096)."
+        },
+        "railsForge.ai.timeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "Per-request timeout for @rails agent calls. Prevents a hung or overloaded Ollama/cloud endpoint from blocking a fix or chat turn indefinitely."
         },
         "railsForge.mcp.enabled": {
           "type": "boolean",

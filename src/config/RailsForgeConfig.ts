@@ -14,6 +14,7 @@
 
 import * as vscode from 'vscode'
 import { ApiDockMapping } from '../docs/ApiDockMethodIndex'
+import { LogLevelName } from '../util/Logger'
 
 export interface GemNamespaceMapping {
   namespace: string
@@ -48,9 +49,17 @@ export interface RailsForgeConfig {
   ollamaHost: string
   ollamaModel: string
   ollamaEmbeddingModel: string
+  ollamaNumCtx: number
+  ollamaKeepAlive: string
+  ollamaRepeatPenalty: number
+  ollamaMinP: number
   aiProvider: AiProvider
   aiOpenaiModel: string
+  aiOpenaiBaseUrl: string
   aiAnthropicModel: string
+  aiTemperature: number
+  aiMaxTokens: number
+  aiTimeoutMs: number
   mcpEnabled: boolean
   apiDocsEnabled: boolean
   performanceCacheSize: number
@@ -74,6 +83,8 @@ export interface RailsForgeConfig {
   typesSteepEnabled: boolean
   typesSteepScanOnSave: boolean
   typesRbsSigDir: string
+  logLevel: LogLevelName
+  logFileEnabled: boolean
 }
 
 export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig {
@@ -91,9 +102,17 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     ollamaHost: cfg.get<string>('ollama.host', 'http://localhost:11434'),
     ollamaModel: cfg.get<string>('ollama.model', 'qwen2.5-coder:14b'),
     ollamaEmbeddingModel: cfg.get<string>('ollama.embeddingModel', 'nomic-embed-text'),
+    ollamaNumCtx: cfg.get<number>('ollama.numCtx', 8192),
+    ollamaKeepAlive: cfg.get<string>('ollama.keepAlive', '30m'),
+    ollamaRepeatPenalty: cfg.get<number>('ollama.repeatPenalty', 1.15),
+    ollamaMinP: cfg.get<number>('ollama.minP', 0.05),
     aiProvider: cfg.get<AiProvider>('ai.provider', 'ollama'),
     aiOpenaiModel: cfg.get<string>('ai.openai.model', 'gpt-4o-mini'),
+    aiOpenaiBaseUrl: cfg.get<string>('ai.openai.baseUrl', 'https://api.openai.com'),
     aiAnthropicModel: cfg.get<string>('ai.anthropic.model', 'claude-sonnet-4-5'),
+    aiTemperature: cfg.get<number>('ai.temperature', 0.2),
+    aiMaxTokens: cfg.get<number>('ai.maxTokens', 2048),
+    aiTimeoutMs: cfg.get<number>('ai.timeoutMs', 120000),
     mcpEnabled: cfg.get<boolean>('mcp.enabled', true),
     apiDocsEnabled: cfg.get<boolean>('apiDocs.enabled', true),
     performanceCacheSize: cfg.get<number>('performance.cacheSize', 200),
@@ -117,6 +136,8 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     typesSteepEnabled: cfg.get<boolean>('types.steepEnabled', false),
     typesSteepScanOnSave: cfg.get<boolean>('types.steepScanOnSave', false),
     typesRbsSigDir: cfg.get<string>('types.rbsSigDir', 'sig'),
+    logLevel: cfg.get<LogLevelName>('log.level', 'info'),
+    logFileEnabled: cfg.get<boolean>('log.file', false),
   }
 }
 

@@ -3,7 +3,7 @@
  */
 
 import * as vscode from 'vscode'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 
 const execFileAsync = promisify(execFile)
@@ -31,32 +31,43 @@ export class RuboCopProvider implements vscode.CodeActionProvider {
     }
 
     try {
-      const offenses = await this.runRuboCop(document.fileName)
+      const offenses = await this.runRuboCop(document.fileName, document.getText())
       this.updateDiagnostics(document, offenses)
     } catch {
       // RuboCop execution or parsing failed gracefully
     }
   }
 
-  private async runRuboCop(filePath: string): Promise<RuboCopOffense[]> {
-    // execFile (not exec/a shell string) so `filePath` — which can contain arbitrary
-    // characters in an untrusted workspace — is never interpreted by a shell.
-    const args = ['--format', 'json', filePath]
-    const viaBundle = await this.tryRuboCop('bundle', ['exec', 'rubocop', ...args])
+  private async runRuboCop(filePath: string, content: string): Promise<RuboCopOffense[]> {
+    // --stdin pipes the in-memory buffer to rubocop so unsaved edits are linted, while the
+    // FILE value still resolves the right .rubocop.yml. execFile (not exec/a shell string)
+    // so `filePath` — which can contain arbitrary characters in an untrusted workspace — is
+    // never interpreted by a shell.
+    const args = ['--format', 'json', '--stdin', filePath]
+    const viaBundle = await this.tryRuboCop('bundle', ['exec', 'rubocop', ...args], content)
     if (viaBundle) {return viaBundle}
-    return (await this.tryRuboCop('rubocop', args)) ?? []
+    return (await this.tryRuboCop('rubocop', args, content)) ?? []
   }
 
   /** Runs one rubocop invocation; returns null (not []) only when it couldn't produce usable output at all, so the caller knows to try the next command instead of accepting "zero offenses". */
-  private async tryRuboCop(command: string, args: string[]): Promise<RuboCopOffense[] | null> {
+  private async tryRuboCop(command: string, args: string[], content: string): Promise<RuboCopOffense[] | null> {
     try {
-      const { stdout } = await execFileAsync(command, args, { maxBuffer: 10 * 1024 * 1024 })
-      return this.parseOffenses(stdout)
-    } catch (err: unknown) {
-      // RuboCop exits non-zero when it finds offenses, even though stdout still holds valid JSON.
-      const execErr = err as { stdout?: string }
-      return execErr.stdout ? this.parseOffenses(execErr.stdout) : null
+      const stdout = await this.spawnWithStdin(command, args, content)
+      return stdout === null ? null : this.parseOffenses(stdout)
+    } catch {
+      return null
     }
+  }
+
+  private spawnWithStdin(command: string, args: string[], content: string): Promise<string | null> {
+    return new Promise(resolve => {
+      const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
+      let stdout = ''
+      child.stdout.on('data', chunk => { stdout += chunk })
+      child.on('error', () => resolve(null))
+      child.on('close', () => resolve(stdout))
+      child.stdin.end(content)
+    })
   }
 
   private parseOffenses(stdout: string): RuboCopOffense[] | null {

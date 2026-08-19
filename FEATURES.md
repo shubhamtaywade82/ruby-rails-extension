@@ -753,9 +753,17 @@ Settings marked **"requires reload"** are read once at activation (or when a pro
 | `railsForge.ollama.host` | `string` | `"http://localhost:11434"` | **Requires reload** | URL of the local Ollama instance |
 | `railsForge.ollama.model` | `string` | `"qwen2.5-coder:14b"` | **Requires reload** | Default chat model for `@rails` AI agent when `ai.provider` is `"ollama"` |
 | `railsForge.ollama.embeddingModel` | `string` | `"nomic-embed-text"` | Live | Embedding model for Semantic Search (pull separately) |
+| `railsForge.ollama.numCtx` | `number` | `8192` | **Requires reload** | Ollama context window for the `@rails` agent. Small models default to ~2048-4096, which truncates the system prompt + file content and caused malformed AI fixes; 8192 fits prompt + diff instructions (16384 for files over ~200 lines). Ollama-only |
+| `railsForge.ollama.keepAlive` | `string` | `"30m"` | **Requires reload** | How long the Ollama model stays loaded after a request, so AI-fix/chat calls skip cold-start load. Ollama-only |
+| `railsForge.ollama.repeatPenalty` | `number` | `1.15` | **Requires reload** | Ollama repeat penalty — suppresses the repetition loops small local models fall into (1.0 disables). Ollama-only |
+| `railsForge.ollama.minP` | `number` | `0.05` | **Requires reload** | Ollama min_p filter — keeps high-probability tokens, drops noise, better quality on small models. Ollama-only |
 | `railsForge.ai.provider` | `"ollama"` \| `"openai"` \| `"anthropic"` | `"ollama"` | **Requires reload** | Backend for the `@rails` agent. Cloud providers send prompts/code to that provider's API |
 | `railsForge.ai.openai.model` | `string` | `"gpt-4o-mini"` | **Requires reload** | Model used when `ai.provider` is `"openai"` |
+| `railsForge.ai.openai.baseUrl` | `string` | `"https://api.openai.com"` | **Requires reload** | Base URL for OpenAI-compatible endpoints (OpenRouter, self-hosted vLLM, OSS model gateways). The agent appends `/v1/chat/completions` |
 | `railsForge.ai.anthropic.model` | `string` | `"claude-sonnet-4-5"` | **Requires reload** | Model used when `ai.provider` is `"anthropic"` |
+| `railsForge.ai.temperature` | `number` | `0.2` | **Requires reload** | Sampling temperature for every provider — 0.2 keeps AI fixes deterministic; raise toward 1.0 for more creative chat |
+| `railsForge.ai.maxTokens` | `number` | `2048` | **Requires reload** | Max generated tokens per response (`num_predict` on Ollama, `max_tokens` on cloud). Caps rambling on 4B models; cloud models can take 4096+ |
+| `railsForge.ai.timeoutMs` | `number` | `120000` | **Requires reload** | Per-request timeout for `@rails` agent calls, so a hung Ollama/cloud endpoint can't block a fix or chat turn |
 | `railsForge.mcp.enabled` | `boolean` | `true` | Live | Whether "Export Cursor Rules" also registers the MCP server in `.cursor/mcp.json` (the `.mdc` rules file is always written) |
 | `railsForge.apiDocs.enabled` | `boolean` | `true` | Live (Command Palette visibility needs reload) | Whether "Generate OpenAPI Skeleton" is available |
 | `railsForge.performance.cacheSize` | `number` | `200` | **Requires reload** | Max entries in RailsForge's bounded caches (Gem Lens lookups, semantic-search embeddings) before LRU eviction |

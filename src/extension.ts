@@ -5,7 +5,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 
 import { SchemaIndexer } from './rails/SchemaIndexer'
@@ -48,7 +48,8 @@ import { RelatedHoverProvider } from './graph/RelatedHoverProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
-import { RailsAgent } from './agent/RailsAgent'
+import { RailsAgent, AiFixProposal } from './agent/RailsAgent'
+import { applyUnifiedHunks } from './patch/UnifiedDiff'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
 import { PersistentIndexManager } from './indexer/PersistentIndexManager'
@@ -61,7 +62,7 @@ import { EndwiseProvider } from './editing/EndwiseProvider'
 import { ErbTagCompletionProvider } from './editing/ErbTagCompletionProvider'
 import { GemLensProvider } from './gems/GemLensProvider'
 import { RubyGemsClient } from './gems/RubyGemsClient'
-import { readConfig, buildExcludeGlob, isExcludedPath } from './config/RailsForgeConfig'
+import { readConfig, buildExcludeGlob, isExcludedPath, onConfigChanged, RailsForgeConfig } from './config/RailsForgeConfig'
 import { buildOpenApiSkeleton } from './docs/OpenApiSkeletonGenerator'
 import { ApiDockClient } from './docs/ApiDockClient'
 import { ApiDockMethodIndex } from './docs/ApiDockMethodIndex'
@@ -87,9 +88,16 @@ import { Logger } from './util/Logger'
 
 const execFileAsync = promisify(execFile)
 
+/** Applies railsForge.log.level and railsForge.log.file immediately, without a reload. */
+function applyLogSettings(config: RailsForgeConfig, workspaceRoot: string): void {
+  Logger.setLevel(config.logLevel)
+  Logger.setLogFile(config.logFileEnabled && workspaceRoot ? path.join(workspaceRoot, '.railsforge', 'railsforge.log') : undefined)
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   Logger.init(context)
   const config = readConfig()
+  Logger.setLevel(config.logLevel)
   const schemaIndexer = new SchemaIndexer()
   const routesIndexer = new RoutesIndexer()
   const mvcNavigator = new MVCNavigator()
@@ -149,6 +157,9 @@ export function activate(context: vscode.ExtensionContext): void {
     env.projectType = config.projectTypeOverride
   }
 
+  applyLogSettings(config, workspaceRoot)
+  context.subscriptions.push(onConfigChanged(() => applyLogSettings(readConfig(), workspaceRoot)))
+
   // Offline DevDocs cache: workspace-local (not globalStorageUri) so the standalone MCP
   // server can find it too — same rationale as PersistentIndexManager's .railsforge/index.sqlite3.
   const devDocsCacheDir = path.join(workspaceRoot, '.railsforge', 'devdocs')
@@ -192,7 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
   Logger.info(`RailsForge activated. Project type: ${env.projectType}, Ruby: ${env.rubyVersion}, Rails: ${env.hasRails ? env.railsVersion : 'none'}`)
 
   const ollamaHost = config.ollamaHost
-  const agent = new RailsAgent(
+const agent = new RailsAgent(
     schemaIndexer,
     routesIndexer,
     {
@@ -200,8 +211,21 @@ export function activate(context: vscode.ExtensionContext): void {
       model: config.ollamaModel,
       provider: config.aiProvider,
       openaiModel: config.aiOpenaiModel,
+      openaiBaseUrl: config.aiOpenaiBaseUrl,
       anthropicModel: config.aiAnthropicModel,
+      temperature: config.aiTemperature,
+      maxTokens: config.aiMaxTokens,
+      timeoutMs: config.aiTimeoutMs,
+      ollamaNumCtx: config.ollamaNumCtx,
+      ollamaKeepAlive: config.ollamaKeepAlive,
+      ollamaRepeatPenalty: config.ollamaRepeatPenalty,
+      ollamaMinP: config.ollamaMinP,
       getApiKey: () => Promise.resolve(context.secrets.get(aiApiKeySecretKey(config.aiProvider))),
+      log: (level, message) => {
+        if (level === 'debug') { Logger.debug(message) }
+        else if (level === 'trace') { Logger.trace(message) }
+        else { Logger.warn(message) }
+      },
     },
     env,
     projectPatternIndexer,
@@ -327,6 +351,17 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   // 4. Live Document Watchers for Diagnostics & Design Pattern Suggestions
+  const rubocopTimers = new Map<string, NodeJS.Timeout>()
+  const scheduleRubocopLint = (doc: vscode.TextDocument, delayMs: number): void => {
+    const key = doc.uri.toString()
+    const existing = rubocopTimers.get(key)
+    if (existing) {clearTimeout(existing)}
+    rubocopTimers.set(key, setTimeout(() => {
+      rubocopTimers.delete(key)
+      void rubocopProvider.lintDocument(doc)
+    }, delayMs))
+  }
+
   vscode.workspace.onDidOpenTextDocument(doc => {
     testExplorer.discoverTestsInDocument(doc)
     migrationDiagnostics.updateDiagnostics(doc)
@@ -334,6 +369,7 @@ export function activate(context: vscode.ExtensionContext): void {
     principleLinter.updateDiagnostics(doc)
     patternDiagnostics.updateDiagnostics(doc)
     dependencyDiagnostics.updateDiagnostics(doc)
+    scheduleRubocopLint(doc, 0)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
@@ -342,6 +378,7 @@ export function activate(context: vscode.ExtensionContext): void {
     principleLinter.updateDiagnostics(e.document)
     patternDiagnostics.updateDiagnostics(e.document)
     dependencyDiagnostics.updateDiagnostics(e.document)
+    scheduleRubocopLint(e.document, 500)
   }, null, context.subscriptions)
 
   let lastBrakemanScanOnSave = 0
@@ -352,6 +389,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (saveConfig.rubocopAutocorrectOnSave) {
       void rubocopProvider.autoCorrectFile(doc.uri, saveConfig.rubocopMode)
     }
+    void rubocopProvider.lintDocument(doc)
     if (saveConfig.brakemanScanOnSave && env.hasRails) {
       // Brakeman is a whole-project static scan (can take several seconds), so a save-
       // triggered run is debounced and silent-on-clean rather than firing (and popping a
@@ -467,6 +505,7 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
     for (const f of files) {
       if (f.endsWith('_controller.js') || f.endsWith('_controller.ts')) {
         const full = path.join(controllersDir, f)
+        if (isExcludedByConfig(full)) {continue}
         const code = fs.readFileSync(full, 'utf8')
         indexer.parseControllerCode(full, code)
       }
@@ -795,8 +834,112 @@ function loadRoutes(root: string, indexer: RoutesIndexer): void {
   const routesPath = path.join(root, 'config', 'routes.rb')
   if (fs.existsSync(routesPath)) {
     const content = fs.readFileSync(routesPath, 'utf8')
-    indexer.parseRoutesTable(content)
+    indexer.parseRoutesDsl(content)
   }
+}
+
+export interface LineDiffHunk {
+  startLine: number
+  removedCount: number
+  inserted: string[]
+}
+
+/** Line-based diff (LCS) between two texts; returns non-overlapping hunks that transform `oldText` into `newText`. */
+export function diffLines(oldText: string, newText: string): LineDiffHunk[] {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const m = oldLines.length
+  const n = newLines.length
+
+  const lcs: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      lcs[i][j] = oldLines[i] === newLines[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+    }
+  }
+
+  const hunks: LineDiffHunk[] = []
+  let i = 0
+  let j = 0
+  let open: LineDiffHunk | null = null
+  const flush = (): void => {
+    if (open && (open.removedCount > 0 || open.inserted.length > 0)) {hunks.push(open)}
+    open = null
+  }
+  while (i < m && j < n) {
+    if (oldLines[i] === newLines[j]) {
+      flush()
+      i++
+      j++
+      continue
+    }
+    if (!open) {open = { startLine: i, removedCount: 0, inserted: [] }}
+    if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      open.removedCount++
+      i++
+    } else {
+      open.inserted.push(newLines[j])
+      j++
+    }
+  }
+  if (open) {
+    open.removedCount += m - i
+    open.inserted.push(...newLines.slice(j))
+    flush()
+  } else if (i < m || j < n) {
+    hunks.push({ startLine: i, removedCount: m - i, inserted: newLines.slice(j) })
+  }
+  return hunks
+}
+
+/**
+ * Keeps only hunks that overlap the reported diagnostic range (0-based lines).
+ * Hunks outside it are the model's unrelated edits (reformatting, renames,
+ * whole-file rewrites) and must never be applied — that's what makes an AI fix
+ * minimal instead of a noisy rewrite.
+ */
+export function filterFixHunks(hunks: LineDiffHunk[], range: { startLine: number; endLine: number }): { keep: LineDiffHunk[]; skipped: number } {
+  const keep: LineDiffHunk[] = []
+  let skipped = 0
+  for (const h of hunks) {
+    const hunkEnd = h.startLine + Math.max(h.removedCount, 1) - 1
+    if (h.startLine <= range.endLine && hunkEnd >= range.startLine) {keep.push(h)}
+    else {skipped++}
+  }
+  return { keep, skipped }
+}
+
+/**
+ * Applies hunks to `fullText` and returns the resulting text. Lossless: applying
+ * `diffLines(a, b)` to `a` always yields `b`, so the applied result is exactly
+ * what the reviewer saw in the diff preview.
+ */
+export function applyHunks(fullText: string, hunks: LineDiffHunk[]): string {
+  const lines = fullText.split('\n')
+  const out: string[] = []
+  let cursor = 0
+  for (const h of hunks) {
+    out.push(...lines.slice(cursor, h.startLine))
+    out.push(...h.inserted)
+    cursor = h.startLine + h.removedCount
+  }
+  out.push(...lines.slice(cursor))
+  return out.join('\n')
+}
+
+/**
+ * Runs `ruby -c` on Ruby content, returning the syntax error message on failure.
+ * Fails open (null) when ruby isn't installed, so a missing runtime never blocks fixes.
+ */
+function rubySyntaxError(content: string): Promise<string | null> {
+  return new Promise(resolve => {
+    const child = spawn('ruby', ['-c'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let err = ''
+    child.stderr.on('data', d => { err += String(d) })
+    child.on('error', () => resolve(null))
+    child.on('close', code => resolve(code === 0 ? null : err.trim() || 'unknown syntax error'))
+    child.stdin.end(content)
+  })
 }
 
 function watchProjectFiles(
@@ -826,6 +969,7 @@ function watchProjectFiles(
 
   const migrationWatcher = vscode.workspace.createFileSystemWatcher('**/db/migrate/*.rb')
   migrationWatcher.onDidChange(uri => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
     void vscode.workspace.openTextDocument(uri).then(doc => migrationDiagnostics.updateDiagnostics(doc))
   })
   context.subscriptions.push(migrationWatcher)
@@ -1090,49 +1234,160 @@ function registerCommands(
       const document = await vscode.workspace.openTextDocument(uri)
       const targetRange = range.isEmpty ? document.lineAt(range.start.line).range : range
       const code = document.getText(targetRange)
+      const fullText = document.getText()
       Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${targetRange.start.line + 1}`)
 
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
         async () => {
-          const fixed = await agent.suggestCodeFix(code, diagnosticMessage, {
-            fileName: document.fileName,
-            fileContent: document.getText(),
-            selection: code,
-            workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-          })
+          // Review-first: shows the exact change in VS Code's diff editor; nothing
+          // is written to the file until the developer explicitly accepts it.
+          const reviewAndApply = async (proposed: string, note: string): Promise<void> => {
+            if (proposed === fullText) {
+              vscode.window.showInformationMessage('RailsForge: AI fix produced no changes.')
+              return
+            }
+            const proposedDoc = await vscode.workspace.openTextDocument({ content: proposed, language: document.languageId })
+            await vscode.commands.executeCommand('vscode.diff', uri, proposedDoc.uri, `RailsForge AI Fix: ${diagnosticMessage}`)
 
-          if (!fixed) {
-            Logger.warn(`[AI Fix] Fix unavailable for: "${diagnosticMessage}"`)
-            vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running or AI provider key is set).')
-            return
+            const choice = await vscode.window.showInformationMessage(
+              `RailsForge AI: review the diff, then confirm.${note}`,
+              'Apply Fix',
+              'Discard',
+            )
+            void vscode.commands.executeCommand('workbench.action.closeActiveEditor')
+
+            if (choice !== 'Apply Fix') {
+              vscode.window.showInformationMessage('RailsForge: AI fix discarded.')
+              return
+            }
+
+            const edit = new vscode.WorkspaceEdit()
+            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), proposed)
+            const applied = await vscode.workspace.applyEdit(edit)
+            if (!applied) {return}
+
+            const editor = vscode.window.activeTextEditor?.document.uri.toString() === uri.toString()
+              ? vscode.window.activeTextEditor
+              : await vscode.window.showTextDocument(document)
+
+            const appliedRange = new vscode.Range(
+              targetRange.start,
+              new vscode.Position(targetRange.start.line + proposed.split('\n').length - 1, 0),
+            )
+            editor.selection = new vscode.Selection(targetRange.start, targetRange.end)
+            editor.revealRange(appliedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
+            vscode.window.showInformationMessage(`RailsForge AI: Fix applied for "${diagnosticMessage}".`)
           }
 
-          const edit = new vscode.WorkspaceEdit()
-          edit.replace(uri, targetRange, fixed)
-          const applied = await vscode.workspace.applyEdit(edit)
-          if (!applied) {return}
+          // Turns a proposal into full proposed text (or null when it can't be
+          // applied). Patch proposals apply verified hunks; snippet proposals are
+          // diffed against the buffer and filtered to the reported problem so
+          // unrelated model edits (reformatting, whole-file rewrites) are suppressed.
+          const applyProposal = async (proposal: AiFixProposal): Promise<{ text: string; note: string } | { error: string } | null> => {
+            if (proposal.type === 'patch') {
+              // Apply hunks for this file only; hunks for other files (multi-file
+              // fixes) are reported and skipped.
+              const targetName = path.basename(document.uri.fsPath)
+              const relevant = proposal.hunks.filter(h => h.file === null || path.basename(h.file) === targetName)
+              if (relevant.length === 0) {
+                vscode.window.showInformationMessage('RailsForge: AI fix only targeted other files — nothing applied to this one.')
+                return null
+              }
+              const result = applyUnifiedHunks(fullText, relevant)
+              if (!result.ok) {
+                // The hunk no longer matches the buffer (stale line numbers or
+                // drifted context). Feed the failure — with the actual lines
+                // around the declared position — back so the model can emit a
+                // corrected diff, mirroring the syntax-error retry.
+                const start = Math.max(0, result.hunkLine - 2)
+                const actual = fullText.split('\n')
+                  .slice(start, result.hunkLine + 3)
+                  .map((l, i) => `${start + i + 1}: ${l}`)
+                  .join('\n')
+                return { error: `${result.reason}. Actual lines around there:\n${actual}` }
+              }
+              const note = relevant.length !== proposal.hunks.length
+                ? ` (${proposal.hunks.length - relevant.length} hunk(s) for other files skipped)`
+                : ''
+              return { text: result.text, note }
+            }
 
-          const editor = vscode.window.activeTextEditor?.document.uri.toString() === uri.toString()
-            ? vscode.window.activeTextEditor
-            : await vscode.window.showTextDocument(document)
+            const fixed = proposal.code
+            const topLevelDecls = (s: string): number => (s.match(/^\s*(?:class|module)\s+[A-Z]/gm) ?? []).length
+            const isFullFileRewrite = topLevelDecls(fixed) > topLevelDecls(code) || fixed.split('\n').length > code.split('\n').length + 3
 
-          const lines = fixed.split('\n')
-          const endLine = targetRange.start.line + lines.length - 1
-          const endChar = lines.length === 1 ? targetRange.start.character + lines[0].length : lines[lines.length - 1].length
-          const appliedRange = new vscode.Range(targetRange.start, new vscode.Position(endLine, endChar))
-          editor.selection = new vscode.Selection(appliedRange.start, appliedRange.end)
-          editor.revealRange(appliedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
+            const allHunks = isFullFileRewrite
+              ? diffLines(fullText, fixed)
+              : diffLines(fullText, fullText.slice(0, document.offsetAt(targetRange.start)) + fixed + fullText.slice(document.offsetAt(targetRange.end)))
+            const { keep: hunks, skipped } = filterFixHunks(allHunks, { startLine: targetRange.start.line, endLine: targetRange.end.line })
 
-          const choice = await vscode.window.showInformationMessage(
-            `RailsForge AI: Fix applied for "${diagnosticMessage}". Accept or discard?`,
-            'Accept Fix',
-            'Discard Fix',
-          )
+            if (hunks.length === 0) {
+              if (skipped > 0) {
+                vscode.window.showWarningMessage(`RailsForge: AI fix only changed ${skipped} unrelated area(s) outside the reported issue — nothing applied.`)
+              } else {
+                vscode.window.showInformationMessage('RailsForge: AI fix produced no changes.')
+              }
+              return null
+            }
 
-          if (choice === 'Discard Fix') {
-            await vscode.commands.executeCommand('undo')
-            vscode.window.showInformationMessage('RailsForge: AI fix discarded.')
+            const changedLines = hunks.reduce((sum, h) => sum + h.removedCount + h.inserted.length, 0)
+            if (changedLines > Math.max(50, fullText.split('\n').length / 2)) {
+              Logger.warn(`[AI Fix] Rejected: diff touches ${changedLines} lines — likely a hallucinated rewrite`)
+              vscode.window.showWarningMessage('RailsForge: AI fix rejected — it would change too much of the file.')
+              return null
+            }
+
+            const note = skipped > 0 ? ` (${skipped} unrelated model change(s) skipped)` : ''
+            return { text: applyHunks(fullText, hunks), note }
+          }
+
+          // At most two attempts: if the first proposal produces invalid Ruby, its
+          // syntax error is fed back so the model can correct the diff directly.
+          let feedback: string | undefined
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const proposal = await agent.suggestFix(code, diagnosticMessage, {
+              fileName: document.fileName,
+              fileContent: document.getText(),
+              selection: code,
+              workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+            }, feedback)
+
+            if (!proposal) {
+              Logger.warn(`[AI Fix] Fix unavailable for: "${diagnosticMessage}"`)
+              vscode.window.showWarningMessage('RailsForge: AI fix unavailable (check that Ollama is running or AI provider key is set).')
+              return
+            }
+
+            const applied = await applyProposal(proposal)
+            if (!applied) {return}
+            if ('error' in applied) {
+              // On the first attempt, feed the apply failure back for a corrected
+              // diff; only reject after the model has had that chance.
+              if (attempt === 0) {
+                Logger.warn(`[AI Fix] Retrying: ${applied.error}`)
+                feedback = applied.error
+                continue
+              }
+              Logger.warn(`[AI Fix] Rejected: ${applied.error}`)
+              vscode.window.showWarningMessage(`RailsForge: AI fix could not be applied — ${applied.error}.`)
+              return
+            }
+
+            const syntaxErr = await rubySyntaxError(applied.text)
+            if (syntaxErr && attempt === 0) {
+              Logger.warn(`[AI Fix] Retrying: proposal produced invalid Ruby syntax: ${syntaxErr}`)
+              feedback = syntaxErr
+              continue
+            }
+            if (syntaxErr) {
+              Logger.warn(`[AI Fix] Rejected: response would produce invalid Ruby syntax: ${syntaxErr}`)
+              vscode.window.showWarningMessage('RailsForge: AI fix rejected — it would produce invalid Ruby syntax.')
+              return
+            }
+
+            await reviewAndApply(applied.text, applied.note)
+            return
           }
         },
       )
