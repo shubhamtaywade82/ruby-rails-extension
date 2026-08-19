@@ -223,7 +223,7 @@ server.registerTool(
   'find_duplicate_methods',
   {
     title: 'Find near-duplicate methods',
-    description: 'Finds near-duplicate method bodies across the indexed codebase (candidates for extracting a shared concern/method). Requires the persistent AST index.',
+    description: 'Checks the codebase for near-duplicate method bodies (candidates for extracting a shared concern/method) — call this before generating a new method, to avoid writing a redundant duplicate of existing logic. Requires the persistent AST index.',
     inputSchema: {},
   },
   async () => {
@@ -270,7 +270,7 @@ server.registerTool(
   'get_method_notes',
   {
     title: 'Get APIDock method notes',
-    description: 'Fetches apidock.com\'s community notes and doc summary for a Ruby/Rails/RSpec method — call this before generating code that uses an unfamiliar method, to ground it in real-world gotchas (skipped validations/callbacks, deprecated behavior, surprising defaults) that official docs often miss.',
+    description: 'Fetches apidock.com\'s community notes and doc summary for a Ruby/Rails/RSpec method — call this before generating code that uses an unfamiliar method, to ground it in real-world gotchas (skipped validations/callbacks, deprecated behavior, surprising defaults) that official docs often miss. This is APIDock only (community notes); for the official signature/description of a Ruby core or Rails framework method, prefer get_offline_docs instead — it\'s instant (no network call) when the docset is cached.',
     inputSchema: {
       method_name: z.string().describe('Method name, e.g. "update_attribute"'),
       class_name: z.string().describe('Class or module name, e.g. "ActiveRecord::Base"'),

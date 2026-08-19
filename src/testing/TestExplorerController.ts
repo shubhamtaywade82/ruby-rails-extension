@@ -4,6 +4,9 @@
 
 import * as vscode from 'vscode'
 import { execFile } from 'child_process'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 export class TestExplorerController {
   private testController: vscode.TestController
@@ -51,7 +54,7 @@ export class TestExplorerController {
     this.testController.items.add(fileTest)
   }
 
-  private runHandler(request: vscode.TestRunRequest, token: vscode.CancellationToken): void {
+  private async runHandler(request: vscode.TestRunRequest, token: vscode.CancellationToken): Promise<void> {
     const run = this.testController.createTestRun(request)
     const queue: vscode.TestItem[] = []
 
@@ -61,22 +64,27 @@ export class TestExplorerController {
       this.testController.items.forEach(item => queue.push(item))
     }
 
-    for (const test of queue) {
-      if (token.isCancellationRequested) {break}
+    // Each test's result must be recorded before `run.end()` fires — VS Code's Test API
+    // treats state updates after `end()` as undefined behavior, and the previous
+    // fire-and-forget `execFile` callbacks routinely lost that race, leaving the Test
+    // Explorer UI showing tests as perpetually running.
+    const runs = queue.map(async test => {
+      if (token.isCancellationRequested) {return}
       run.started(test)
 
       // execFile (not exec/a shell string) so the file path — which can contain
       // arbitrary characters in an untrusted workspace — is never interpreted by a shell.
       const [command, args] = this.buildTestCommand(test)
-      execFile(command, args, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath }, (error, stdout, stderr) => {
-        if (error) {
-          run.failed(test, new vscode.TestMessage(stderr || stdout || error.message))
-        } else {
-          run.passed(test)
-        }
-      })
-    }
+      try {
+        await execFileAsync(command, args, { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath })
+        run.passed(test)
+      } catch (err: unknown) {
+        const execErr = err as { stdout?: string; stderr?: string; message?: string }
+        run.failed(test, new vscode.TestMessage(execErr.stderr || execErr.stdout || execErr.message || 'Test failed'))
+      }
+    })
 
+    await Promise.all(runs)
     run.end()
   }
 

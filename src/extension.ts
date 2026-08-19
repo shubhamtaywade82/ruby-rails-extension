@@ -1225,6 +1225,7 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.refactorSelection', () => refactoringMenu.promptRefactoring()),
     vscode.commands.registerCommand('railsforge.goToModel', () => navigateCompanion(mvc, 'model')),
     vscode.commands.registerCommand('railsforge.goToController', () => navigateCompanion(mvc, 'controller')),
+    vscode.commands.registerCommand('railsforge.goToView', () => navigateToView(mvc)),
     vscode.commands.registerCommand('railsforge.goToSpec', () => navigateCompanion(mvc, 'spec')),
     vscode.commands.registerCommand('railsforge.searchRoutes', async () => {
       const allRoutes = routes.getAllRoutes()
@@ -1236,6 +1237,44 @@ function registerCommands(
       if (selected) {
         vscode.window.showInformationMessage(`Selected Route: ${selected.label} => ${selected.description}`)
       }
+    }),
+    vscode.commands.registerCommand('railsforge.showSchemaPeek', async () => {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) {
+        vscode.window.showWarningMessage('RailsForge: No active editor.')
+        return
+      }
+
+      // A PascalCase word under the cursor (e.g. hovering "User" in "belongs_to :user"'s
+      // inferred class, or a bare reference elsewhere) wins over the current file, so
+      // peeking a *different* model than the one you're editing works too.
+      const wordRange = editor.document.getWordRangeAtPosition(editor.selection.active, /[A-Za-z][A-Za-z0-9_]*/)
+      const word = wordRange ? editor.document.getText(wordRange) : undefined
+      const fileModel = mvc.identifyFileType(editor.document.fileName) === 'model'
+        ? mvc.extractResourceInfo(editor.document.fileName)?.singularName
+        : undefined
+      const modelName = word ?? fileModel
+
+      if (!modelName) {
+        vscode.window.showWarningMessage('RailsForge: Place the cursor on a model name (e.g. "User"), or run this from a model file.')
+        return
+      }
+
+      const columns = schemaIndexer.getModelColumns(modelName)
+      if (columns.length === 0) {
+        vscode.window.showWarningMessage(`RailsForge: No schema found for "${modelName}" in db/schema.rb.`)
+        return
+      }
+
+      const lines = [
+        `# Schema: ${modelName}`,
+        '',
+        '| Column | Type | Nullable | Default |',
+        '| --- | --- | :---: | --- |',
+        ...columns.map(c => `| \`${c.name}\` | \`${c.type}\` | ${c.nullable ? '✓' : '✗'} | ${c.default ? `\`${c.default}\`` : '-'} |`),
+      ]
+      const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'markdown' })
+      await vscode.window.showTextDocument(doc, { preview: true })
     }),
     vscode.commands.registerCommand('railsforge.rubocopAutocorrect', async (uri?: vscode.Uri) => {
       const targetUri = uri ?? vscode.window.activeTextEditor?.document.uri
@@ -1658,6 +1697,37 @@ function navigateCompanion(mvc: MVCNavigator, targetType: string): void {
   } else {
     vscode.window.showWarningMessage(`Companion ${targetType} not found at ${targetPath}`)
   }
+}
+
+/**
+ * Unlike model/controller/spec, "the" view isn't a single companion file —
+ * `getCompanionPaths` only resolves a `viewDir` (a directory can hold index/show/new/edit/
+ * etc. templates), so this lists what's actually in it rather than guessing one path via
+ * `navigateCompanion`'s single-file lookup, which is why `railsforge.goToView` needs its
+ * own handler.
+ */
+async function navigateToView(mvc: MVCNavigator): Promise<void> {
+  const editor = vscode.window.activeTextEditor
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  if (!editor || !root) {return}
+
+  const viewDir = mvc.getCompanionPaths(editor.document.fileName, root).viewDir
+  if (!viewDir || !fs.existsSync(viewDir)) {
+    vscode.window.showWarningMessage(`RailsForge: No view directory found${viewDir ? ` at ${viewDir}` : ''}.`)
+    return
+  }
+
+  const templates = fs.readdirSync(viewDir).filter(f => /\.(erb|haml|slim|builder|jbuilder)$/.test(f)).sort()
+  if (templates.length === 0) {
+    vscode.window.showWarningMessage(`RailsForge: No view templates found in ${viewDir}.`)
+    return
+  }
+
+  const chosen = templates.length === 1 ? templates[0] : await vscode.window.showQuickPick(templates, { placeHolder: `Select a view in ${path.basename(viewDir)}/` })
+  if (!chosen) {return}
+
+  const doc = await vscode.workspace.openTextDocument(path.join(viewDir, chosen))
+  await vscode.window.showTextDocument(doc)
 }
 
 export function deactivate(): void {
