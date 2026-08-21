@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "vscode-extension-builder-lawvable": {
+      "source": "lawve-ai/awesome-legal-skills",
+      "sourceType": "github",
+      "skillPath": "skills/vs-code-extension-antoine-louis/SKILL.md",
+      "computedHash": "0f401e0dd6d09579b8e39f1890e08a530687888ee984828441ac75c5e85d64c1"
+    }
+  }
+}
