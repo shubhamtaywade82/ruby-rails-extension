@@ -15,6 +15,15 @@ function looksLikeDiff(text: string): boolean {
   return /^@@ -/m.test(text) || /^--- /m.test(text) || /^\+\+\+ /m.test(text) || /^diff --git /m.test(text)
 }
 
+function cleanModelOutput(raw: string): string {
+  let cleaned = raw.trim()
+  if (/<think>[\s\S]*?<\/think>/.test(cleaned)) {
+    const outside = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    cleaned = outside.length > 0 ? outside : cleaned.replace(/<\/?think>/g, '').trim()
+  }
+  return cleaned.replace(/^```(?:ruby|diff)?\n?/, '').replace(/\n?```$/, '').trim()
+}
+
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}… (truncated, ${text.length} chars total)`
 }
@@ -96,6 +105,10 @@ export class RailsAgent {
     private patternIndexer?: ProjectPatternIndexer,
   ) {}
 
+  updateConfig(newConfig: Partial<RailsAgentConfig>): void {
+    this.config = { ...this.config, ...newConfig }
+  }
+
   async run(prompt: string, context: RailsAgentContext): Promise<RailsAgentResult> {
     const startedAt = Date.now()
     const systemPrompt = context.isFix
@@ -165,16 +178,13 @@ export class RailsAgent {
           }
           : {}),
       })
-      const text = await client.chatText({
+      const chatRes = await client.chat({
         model: this.config.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt },
         ],
-        // Ollama-specific knobs: small local models need a real context window
-        // (the default truncates the prompt, which caused malformed diffs and
-        // corrective retries), a token cap to stop rambling, and mild repeat/min-p
-        // filtering. keep_alive keeps the model resident to avoid per-call load time.
+        stream: false,
         options: {
           temperature: this.config.temperature ?? 0.2,
           num_predict: this.config.maxTokens ?? 2048,
@@ -185,6 +195,16 @@ export class RailsAgent {
         keep_alive: this.config.ollamaKeepAlive ?? '30m',
         timeoutMs: this.config.timeoutMs ?? 120000,
       })
+
+      const rawMsg = chatRes.message as unknown as Record<string, unknown> | undefined
+      const text = (typeof rawMsg?.content === 'string' && rawMsg.content.trim().length > 0)
+        ? rawMsg.content
+        : (typeof rawMsg?.thinking === 'string' && rawMsg.thinking.trim().length > 0)
+          ? rawMsg.thinking
+          : (typeof rawMsg?.reasoning_content === 'string' && rawMsg.reasoning_content.trim().length > 0)
+            ? rawMsg.reasoning_content
+            : ''
+
       return { success: true, response: text }
     } catch (err) {
       return { success: false, response: `Failed to connect to local Ollama at ${this.config.ollamaHost}: ${String(err)}` }
@@ -234,8 +254,13 @@ export class RailsAgent {
         return { success: false, response: `${connectionLabel} error: ${res.status} ${res.statusText}` }
       }
 
-      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const text = json.choices?.[0]?.message?.content ?? 'No response generated.'
+      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }> }
+      const msg = json.choices?.[0]?.message
+      const text = (msg?.content && msg.content.trim().length > 0)
+        ? msg.content
+        : (msg?.reasoning_content && msg.reasoning_content.trim().length > 0)
+          ? msg.reasoning_content
+          : ''
       this.log('trace', `[${connectionLabel}] response: ${truncate(safeJson(json), 8000)}`)
       return { success: true, response: text }
     } catch (err) {
@@ -276,10 +301,12 @@ export class RailsAgent {
         return { success: false, response: `Anthropic error: ${res.status} ${res.statusText}` }
       }
 
-      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
+      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string; thinking?: string }> }
       const text = json.content?.find(block => block.type === 'text')?.text
+        ?? json.content?.find(block => block.type === 'thinking')?.thinking
+        ?? ''
       this.log('trace', `[Anthropic] response: ${truncate(safeJson(json), 8000)}`)
-      return { success: true, response: text ?? 'No response generated.' }
+      return { success: true, response: text }
     } catch (err) {
       return { success: false, response: `Failed to connect to Anthropic: ${String(err)}` }
     }
@@ -315,8 +342,11 @@ export class RailsAgent {
         return null
       }
 
-      const cleaned = result.response.trim().replace(/^```(?:ruby|diff)?\n?/, '').replace(/\n?```$/, '')
-      if (!cleaned) {continue}
+      const cleaned = cleanModelOutput(result.response)
+      if (!cleaned) {
+        this.log('warn', `[AI Fix] Model response was empty on attempt ${attempt + 1}`)
+        continue
+      }
 
       const hunks = parseUnifiedDiff(cleaned)
       if (hunks && hunks.length > 0) {

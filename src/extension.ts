@@ -48,7 +48,7 @@ import { RelatedHoverProvider } from './graph/RelatedHoverProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
-import { RailsAgent, AiFixProposal } from './agent/RailsAgent'
+import { RailsAgent, AiFixProposal, RailsAgentConfig } from './agent/RailsAgent'
 import { applyUnifiedHunks, parseUnifiedDiff } from './patch/UnifiedDiff'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
@@ -160,7 +160,6 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   applyLogSettings(config, workspaceRoot)
-  context.subscriptions.push(onConfigChanged(() => applyLogSettings(readConfig(), workspaceRoot)))
 
   // Offline DevDocs cache: workspace-local (not globalStorageUri) so the standalone MCP
   // server can find it too — same rationale as PersistentIndexManager's .railsforge/index.sqlite3.
@@ -205,38 +204,46 @@ export function activate(context: vscode.ExtensionContext): void {
 
   Logger.info(`RailsForge activated. Project type: ${env.projectType}, Ruby: ${env.rubyVersion}, Rails: ${env.hasRails ? env.railsVersion : 'none'}`)
 
-  const ollamaHost = config.ollamaHost
-const agent = new RailsAgent(
+  const getAgentConfig = (cfg: RailsForgeConfig = readConfig()): RailsAgentConfig => ({
+    ollamaHost: cfg.ollamaHost,
+    model: cfg.ollamaModel,
+    provider: cfg.aiProvider,
+    openaiModel: cfg.aiOpenaiModel,
+    openaiBaseUrl: cfg.aiOpenaiBaseUrl,
+    anthropicModel: cfg.aiAnthropicModel,
+    temperature: cfg.aiTemperature,
+    maxTokens: cfg.aiMaxTokens,
+    timeoutMs: cfg.aiTimeoutMs,
+    legalMode: cfg.legalSkillsEnabled,
+    ollamaNumCtx: cfg.ollamaNumCtx,
+    ollamaKeepAlive: cfg.ollamaKeepAlive,
+    ollamaRepeatPenalty: cfg.ollamaRepeatPenalty,
+    ollamaMinP: cfg.ollamaMinP,
+    getApiKey: async () => context.secrets.get(aiApiKeySecretKey(readConfig().aiProvider)),
+    log: (level: 'debug' | 'trace' | 'warn', message: string) => {
+      if (level === 'debug') { Logger.debug(message) }
+      else if (level === 'trace') { Logger.trace(message) }
+      else { Logger.warn(message) }
+    },
+  })
+
+  const agent = new RailsAgent(
     schemaIndexer,
     routesIndexer,
-    {
-      ollamaHost,
-      model: config.ollamaModel,
-      provider: config.aiProvider,
-      openaiModel: config.aiOpenaiModel,
-      openaiBaseUrl: config.aiOpenaiBaseUrl,
-      anthropicModel: config.aiAnthropicModel,
-      temperature: config.aiTemperature,
-      maxTokens: config.aiMaxTokens,
-      timeoutMs: config.aiTimeoutMs,
-      legalMode: config.legalSkillsEnabled,
-      ollamaNumCtx: config.ollamaNumCtx,
-      ollamaKeepAlive: config.ollamaKeepAlive,
-      ollamaRepeatPenalty: config.ollamaRepeatPenalty,
-      ollamaMinP: config.ollamaMinP,
-      getApiKey: () => Promise.resolve(context.secrets.get(aiApiKeySecretKey(config.aiProvider))),
-      log: (level, message) => {
-        if (level === 'debug') { Logger.debug(message) }
-        else if (level === 'trace') { Logger.trace(message) }
-        else { Logger.warn(message) }
-      },
-    },
+    getAgentConfig(config),
     env,
     projectPatternIndexer,
   )
 
+  context.subscriptions.push(onConfigChanged(() => {
+    const freshConfig = readConfig()
+    applyLogSettings(freshConfig, workspaceRoot)
+    agent.updateConfig(getAgentConfig(freshConfig))
+    void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', freshConfig.aiProvider)
+  }))
+
   const embeddingClient = new EmbeddingClient({
-    ollamaHost,
+    ollamaHost: config.ollamaHost,
     model: config.ollamaEmbeddingModel,
   })
   const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text), config.performanceCacheSize)
@@ -504,6 +511,7 @@ const agent = new RailsAgent(
     rbsIndex,
     steepProvider,
     steepDiagnostics,
+    getAgentConfig,
   )
 
   // 5. Register Chat Participant
@@ -1203,6 +1211,7 @@ function registerCommands(
   rbsIndex: RBSIndex,
   steepProvider: SteepProvider,
   steepDiagnostics: vscode.DiagnosticCollection,
+  getAgentConfig: (cfg?: RailsForgeConfig) => RailsAgentConfig,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('railsforge.optimizeWorkspacePerformance', async () => {
@@ -1253,13 +1262,20 @@ function registerCommands(
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
     }),
     vscode.commands.registerCommand('railsforge.setAiApiKey', async () => {
-      const provider = readConfig().aiProvider
+      let provider = readConfig().aiProvider
       if (provider === 'ollama') {
-        vscode.window.showInformationMessage('RailsForge: railsForge.ai.provider is "ollama" — no API key needed. Set railsForge.ai.provider to "openai" or "anthropic" first.')
-        return
+        const choice = await vscode.window.showQuickPick(
+          [
+            { label: '$(cloud) OpenAI / Compatible', description: 'OpenAI, OpenRouter, MiniMax, Groq, DeepSeek', provider: 'openai' as const },
+            { label: '$(cloud) Anthropic', description: 'Claude Sonnet / Opus', provider: 'anthropic' as const },
+          ],
+          { placeHolder: 'Select the cloud provider to set an API key for' },
+        )
+        if (!choice) {return}
+        provider = choice.provider
       }
 
-      const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+      const providerLabel = provider === 'openai' ? 'OpenAI / Compatible' : 'Anthropic'
       const key = await vscode.window.showInputBox({
         title: `RailsForge: Set ${providerLabel} API Key`,
         prompt: 'Stored securely via VS Code SecretStorage, never written to settings.json. Leave blank and press Enter to clear the stored key.',
@@ -1275,7 +1291,8 @@ function registerCommands(
       }
 
       await context.secrets.store(aiApiKeySecretKey(provider), key)
-      vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved. (railsForge.ai.provider changes require a window reload to take effect.)`)
+      agent.updateConfig(getAgentConfig())
+      vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved securely.`)
     }),
     vscode.commands.registerCommand('railsforge.generateApiDocs', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
