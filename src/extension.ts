@@ -49,7 +49,7 @@ import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
 import { RailsAgent, AiFixProposal } from './agent/RailsAgent'
-import { applyUnifiedHunks } from './patch/UnifiedDiff'
+import { applyUnifiedHunks, parseUnifiedDiff } from './patch/UnifiedDiff'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
 import { PersistentIndexManager } from './indexer/PersistentIndexManager'
@@ -952,88 +952,11 @@ function rubySyntaxError(content: string): Promise<string | null> {
   })
 }
 
-/**
- * Applies a cached unified diff to the full file content.
- * Parses the diff hunks and applies them to the full text.
- */
 function applyCachedDiff(fullText: string, diff: string): string | null {
-  try {
-    const diffLines = diff.split('\n')
-    let fileA = ''
-    let fileB = ''
-    let inHunk = false
-    let oldStart = 0
-    let oldCount = 0
-    let newStart = 0
-    let newCount = 0
-    const hunks: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number; oldLines: string[]; newLines: string[] }> = []
-    let currentHunk: typeof hunks[0] | null = null
-
-    for (const line of diffLines) {
-      if (line.startsWith('--- a/')) {
-        fileA = line.slice(6)
-      } else if (line.startsWith('+++ b/')) {
-        fileB = line.slice(6)
-      } else if (line.startsWith('@@ -')) {
-        if (currentHunk) {hunks.push(currentHunk)}
-        const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
-        if (!match) {return null}
-        oldStart = Math.max(0, Number(match[1]) - 1)
-        oldCount = Number(match[2]) ?? 1
-        newStart = Math.max(0, Number(match[3]) - 1)
-        newCount = Number(match[4]) ?? 1
-        currentHunk = { oldStart, oldCount, newStart, newCount, oldLines: [], newLines: [] }
-      } else if (currentHunk) {
-        if (line.startsWith(' ')) {
-          currentHunk.oldLines.push(line.slice(1))
-          currentHunk.newLines.push(line.slice(1))
-        } else if (line.startsWith('-')) {
-          currentHunk.oldLines.push(line.slice(1))
-        } else if (line.startsWith('+')) {
-          currentHunk.newLines.push(line.slice(1))
-        } else {
-          // End of hunk
-          hunks.push(currentHunk)
-          currentHunk = null
-        }
-      }
-    }
-    if (currentHunk) {hunks.push(currentHunk)}
-
-    if (hunks.length === 0) {return null}
-
-    // Apply hunks to fullText
-    const textLines = fullText.split('\n')
-    const out: string[] = []
-    let cursor = 0
-    let offset = 0
-
-    for (const h of hunks) {
-      const target = h.oldStart + offset
-      if (target < 0 || target > textLines.length) {return null}
-      // Find best match for h.oldLines
-      let found = -1
-      const maxShift = 10
-      const lo = Math.max(0, target - maxShift)
-      const hi = Math.min(textLines.length - h.oldLines.length, target + maxShift)
-      for (let i = lo; i <= hi; i++) {
-        let match = true
-        for (let k = 0; k < h.oldLines.length; k++) {
-          if (textLines[i + k] !== h.oldLines[k]) {match = false; break}
-        }
-        if (match) {found = i; break}
-      }
-      if (found === -1) {return null}
-      out.push(...textLines.slice(cursor, found))
-      out.push(...h.newLines)
-      cursor = found + h.oldLines.length
-      offset += h.newLines.length - h.oldLines.length
-    }
-    out.push(...textLines.slice(cursor))
-    return out.join('\n')
-  } catch {
-    return null
-  }
+  const hunks = parseUnifiedDiff(diff)
+  if (!hunks) { return null }
+  const result = applyUnifiedHunks(fullText, hunks)
+  return result.ok ? result.text : null
 }
 
 /**
@@ -1054,7 +977,7 @@ type OffenseVerification =
   | { status: 'remaining'; offense: string }
 
 /** Generates a meaningful one-line documentation comment for a class/module. */
-function buildDocComment(className: string, headerLine: string, fullText: string, lineIdx: number): string {
+function buildDocComment(className: string, headerLine: string): string {
   const isModule = headerLine.trim().startsWith('module')
   const isController = /Controller\b/.test(className)
   const isModel = /< ApplicationRecord\b/.test(headerLine)
@@ -1561,7 +1484,7 @@ function registerCommands(
               const lines = fullText.split('\n')
               const indent = headerLine.match(/^\s*/)?.[0] ?? ''
               const className = headerLine.match(/(?:class|module)\s+([A-Z]\w*)/)?.[1] ?? 'Product'
-              const comment = `${indent}# ${buildDocComment(className, headerLine, fullText, targetRange.start.line)}`
+              const comment = `${indent}# ${buildDocComment(className, headerLine)}`
               lines.splice(targetRange.start.line, 0, comment)
               deterministicFix = lines.join('\n')
               Logger.debug(`[AI Fix] Applied deterministic fix for ${cop}`)
@@ -1586,7 +1509,6 @@ function registerCommands(
           const cachedDiff = cop ? speculativeFixCache.get(cop, code) : null
           if (cachedDiff) {
             const fullText = document.getText()
-            const lines = fullText.split('\n')
             // Apply cached diff by finding the target range
             // For now, apply as a full-file replacement (simpler and safe for small diffs)
             const appliedText = applyCachedDiff(fullText, cachedDiff)

@@ -1,20 +1,11 @@
-/**
- * SpeculativeFixCache - Pre-generates and caches AI fixes for common, deterministic RuboCop offenses.
- *
- * On workspace activation, pre-generates fixes for the top 20 most common RuboCop offenses
- * using a deterministic prompt template. This enables instant fixes for the majority of
- * issues without calling the model at request time.
- */
-
-import * as vscode from 'vscode'
+import { UnifiedHunk } from '../patch/UnifiedDiff'
 import { RailsAgent, RailsAgentContext } from './RailsAgent'
-import { RailsAgentConfig } from './RailsAgent'
 
 export interface CachedFix {
   diff: string
   diagnosticMessage: string
   cop: string
-  codePattern: string // Regex or exact match for the code this fix applies to
+  codePattern: string
   generatedAt: number
 }
 
@@ -25,119 +16,37 @@ interface SpeculativeCacheConfig {
 
 const DEFAULT_CONFIG: SpeculativeCacheConfig = {
   maxEntries: 100,
-  ttlMs: 24 * 60 * 60 * 1000, // 24 hours
+  ttlMs: 24 * 60 * 60 * 1000,
 }
 
-/**
- * Common RuboCop offenses that benefit from speculative caching.
- * These are frequent, deterministic, and follow predictable fix patterns.
- */
-const COMMON_COP_TEMPLATES: Array<{ cop: string; codePattern: string; prompt: string }> = [
-  {
-    cop: 'Style/FrozenStringLiteralComment',
-    codePattern: '^\\s*[^#]',
-    prompt: `Fix this missing frozen_string_literal comment. Output ONLY a minimal unified diff adding the comment at the top of the file.`
-  },
-  {
-    cop: 'Style/Documentation',
-    codePattern: 'class\\s+[A-Z]\\w*',
-    prompt: `Fix this missing top-level documentation comment. Output ONLY a minimal unified diff adding a single comment line above the class/module.`
-  },
-  {
-    cop: 'Layout/TrailingWhitespace',
-    codePattern: '\\s+$',
-    prompt: `Fix trailing whitespace. Output ONLY a minimal unified diff removing trailing spaces.`
-  },
-  {
-    cop: 'Rails/ReadWriteAttribute',
-    codePattern: 'attr_(reader|writer|accessor)\\s+:',
-    prompt: `Fix this Rails attribute accessor. Use ActiveRecord attribute methods instead. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Rails/SaveBang',
-    codePattern: '\\.save(?!\\!)',
-    prompt: `Fix this save call to use save! for exception-raising behavior. Output ONLY a minimal unified diff changing .save to .save!.`
-  },
-  {
-    cop: 'Style/StringLiterals',
-    codePattern: '"[^"]*"',
-    prompt: `Fix string literal style. Prefer single quotes when no interpolation. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Layout/LineLength',
-    codePattern: '.{120,}',
-    prompt: `Fix line length violation. Break long lines appropriately. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Metrics/MethodLength',
-    codePattern: 'def\\s+\\w+',
-    prompt: `Fix method length violation. Extract helper methods. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Metrics/ClassLength',
-    codePattern: 'class\\s+[A-Z]\\w*',
-    prompt: `Fix class length violation. Extract to service/query/form object. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/GuardClause',
-    codePattern: 'if\\s+.*\\n\\s+else',
-    prompt: `Fix guard clause. Return early instead of if/else. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Rails/Pluck',
-    codePattern: '\\.map\\{|\\.collect\\{',
-    prompt: `Fix this to use pluck instead of map/collect. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Rails/WhereExists',
-    codePattern: '\\.where\\(.*\\.exists',
-    prompt: `Fix this to use where.exists instead. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Rails/OutputSafety',
-    codePattern: '<%=',
-    prompt: `Fix output safety. Use raw/sanitize appropriately. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Rails/Delegate',
-    codePattern: 'def\\s+\\w+.*\\.\\w+',
-    prompt: `Fix this to use delegate instead of manual delegation. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/EmptyMethod',
-    codePattern: 'def\\s+\\w+\\s*\\(.*\\)\\s*\\n\\s*end',
-    prompt: `Fix empty method. Add implementation or remove. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/RedundantReturn',
-    codePattern: 'return\\s+',
-    prompt: `Fix redundant return. Remove explicit return. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/RedundantSelf',
-    codePattern: 'self\\.\\w+',
-    prompt: `Fix redundant self. Remove explicit self. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Layout/SpaceAroundOperators',
-    codePattern: '[^\\s][+\\-*/=]{1,2}[^\\s]',
-    prompt: `Fix spacing around operators. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/NumericLiterals',
-    codePattern: '\\d{4,}',
-    prompt: `Fix numeric literals. Add underscores for readability. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Style/PercentQLiterals',
-    codePattern: '"\\[.*\\]"',
-    prompt: `Fix to use %q/%Q literal syntax. Output ONLY a minimal unified diff.`
-  },
-  {
-    cop: 'Layout/FirstArrayElementIndentation',
-    codePattern: '\\[\\s*\\n',
-    prompt: `Fix array element indentation. Output ONLY a minimal unified diff.`
-  }
+interface CopTemplate {
+  cop: string
+  codePattern: string
+  prompt: string
+}
+
+const COMMON_COP_TEMPLATES: CopTemplate[] = [
+  { cop: 'Style/FrozenStringLiteralComment', codePattern: '^\\s*[^#]', prompt: 'Fix missing frozen_string_literal comment. Output ONLY a minimal unified diff adding the comment.' },
+  { cop: 'Style/Documentation', codePattern: 'class\\s+[A-Z]\\w*', prompt: 'Fix missing top-level doc comment. Output ONLY a minimal unified diff adding a comment line.' },
+  { cop: 'Layout/TrailingWhitespace', codePattern: '\\s+$', prompt: 'Fix trailing whitespace. Output ONLY a minimal unified diff removing trailing spaces.' },
+  { cop: 'Rails/ReadWriteAttribute', codePattern: 'attr_(reader|writer|accessor)\\s+:', prompt: 'Fix Rails attribute accessor. Output ONLY a minimal unified diff.' },
+  { cop: 'Rails/SaveBang', codePattern: '\\.save(?!\\!)', prompt: 'Fix save call to use save!. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/StringLiterals', codePattern: '"[^"]*"', prompt: 'Fix string literal style. Output ONLY a minimal unified diff.' },
+  { cop: 'Layout/LineLength', codePattern: '.{120,}', prompt: 'Fix line length violation. Output ONLY a minimal unified diff.' },
+  { cop: 'Metrics/MethodLength', codePattern: 'def\\s+\\w+', prompt: 'Fix method length violation. Output ONLY a minimal unified diff.' },
+  { cop: 'Metrics/ClassLength', codePattern: 'class\\s+[A-Z]\\w*', prompt: 'Fix class length violation. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/GuardClause', codePattern: 'if\\s+.*\\n\\s+else', prompt: 'Fix guard clause. Output ONLY a minimal unified diff.' },
+  { cop: 'Rails/Pluck', codePattern: '\\.map\\{|\\.collect\\{', prompt: 'Fix to use pluck instead of map. Output ONLY a minimal unified diff.' },
+  { cop: 'Rails/WhereExists', codePattern: '\\.where\\(.*\\.exists', prompt: 'Fix to use where.exists. Output ONLY a minimal unified diff.' },
+  { cop: 'Rails/OutputSafety', codePattern: '<%=', prompt: 'Fix output safety. Output ONLY a minimal unified diff.' },
+  { cop: 'Rails/Delegate', codePattern: 'def\\s+\\w+.*\\.\\w+', prompt: 'Fix to use delegate. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/EmptyMethod', codePattern: 'def\\s+\\w+\\s*\\(.*\\)\\s*\\n\\s*end', prompt: 'Fix empty method. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/RedundantReturn', codePattern: 'return\\s+', prompt: 'Fix redundant return. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/RedundantSelf', codePattern: 'self\\.\\w+', prompt: 'Fix redundant self. Output ONLY a minimal unified diff.' },
+  { cop: 'Layout/SpaceAroundOperators', codePattern: '[^\\s][+\\-*/=]{1,2}[^\\s]', prompt: 'Fix spacing around operators. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/NumericLiterals', codePattern: '\\d{4,}', prompt: 'Fix numeric literals. Output ONLY a minimal unified diff.' },
+  { cop: 'Style/PercentQLiterals', codePattern: '"\\[.*\\]"', prompt: 'Fix to use %q/%Q literal syntax. Output ONLY a minimal unified diff.' },
+  { cop: 'Layout/FirstArrayElementIndentation', codePattern: '\\[\\s*\\n', prompt: 'Fix array element indentation. Output ONLY a minimal unified diff.' },
 ]
 
 export class SpeculativeFixCache {
@@ -152,10 +61,6 @@ export class SpeculativeFixCache {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
-  /**
-   * Warms the cache by pre-generating fixes for common cops.
-   * Call this on workspace activation. Idempotent - subsequent calls return the same promise.
-   */
   async warm(): Promise<void> {
     if (this.warmed) { return }
     if (this.warming) { return this.warming }
@@ -170,38 +75,22 @@ export class SpeculativeFixCache {
   }
 
   private async doWarm(): Promise<void> {
-    console.log('[SpeculativeFixCache] Warming cache...')
-    const start = Date.now()
-    let generated = 0
-
     for (const template of COMMON_COP_TEMPLATES) {
-      if (this.cache.size >= this.config.maxEntries) {break}
-
+      if (this.cache.size >= this.config.maxEntries) { break }
       try {
         const diff = await this.generateTemplateFix(template)
         if (diff) {
-          const key = this.makeKey(template.cop, template.codePattern)
-          this.cache.set(key, {
-            diff,
-            diagnosticMessage: template.cop,
-            cop: template.cop,
-            codePattern: template.codePattern,
-            generatedAt: Date.now(),
-          })
-          generated++
+          this.set(template.cop, template.codePattern, diff)
         }
-      } catch (e) {
-        console.warn(`[SpeculativeFixCache] Failed to generate fix for ${template.cop}: ${e}`)
+      } catch {
+        // Speculative pre-warming is best-effort on activation
       }
     }
-
-    console.log(`[SpeculativeFixCache] Warmed ${generated} fixes in ${Date.now() - start}ms`)
   }
 
-  private async generateTemplateFix(template: typeof COMMON_COP_TEMPLATES[0]): Promise<string | null> {
-    // Generate a minimal code example that triggers this cop
-    const exampleCode = this.getExampleCode(template.cop, template.codePattern)
-    if (!exampleCode) {return null}
+  private async generateTemplateFix(template: CopTemplate): Promise<string | null> {
+    const exampleCode = this.getExampleCode(template.cop)
+    if (!exampleCode) { return null }
 
     const context: RailsAgentContext = {
       fileContent: exampleCode,
@@ -210,16 +99,13 @@ export class SpeculativeFixCache {
       isFix: true,
     }
 
-    const prompt = `Fix this ${template.cop} violation. ${template.prompt}`
-    const result = await this.agent.suggestFix(exampleCode, template.cop, context)
-    if (!result || result.type !== 'patch' || result.hunks.length === 0) {return null}
+    const result = await this.agent.suggestFix(exampleCode, `${template.cop}. ${template.prompt}`, context)
+    if (!result || result.type !== 'patch' || result.hunks.length === 0) { return null }
 
-    // Convert hunks back to diff text for caching
-    return this.hunksToDiff(result.hunks, exampleCode)
+    return this.hunksToDiff(result.hunks)
   }
 
-  private getExampleCode(cop: string, pattern: string): string | null {
-    // Return minimal code that triggers the cop
+  private getExampleCode(cop: string): string | null {
     const examples: Record<string, string> = {
       'Style/FrozenStringLiteralComment': 'class Foo\n  def bar; end\nend',
       'Style/Documentation': 'class Foo\n  def bar; end\nend',
@@ -246,10 +132,9 @@ export class SpeculativeFixCache {
     return examples[cop] ?? null
   }
 
-  private hunksToDiff(hunks: any[], originalCode: string): string {
-    // Reconstruct diff from hunks (simplified - just use the first hunk for template)
+  private hunksToDiff(hunks: UnifiedHunk[]): string {
     const hunk = hunks[0]
-    if (!hunk) {return ''}
+    if (!hunk) { return '' }
     const lines = ['--- a/example.rb', '+++ b/example.rb']
     lines.push(`@@ -${hunk.oldStart + 1},${hunk.oldLines.length} +${hunk.oldStart + 1},${hunk.newLines.length} @@`)
     for (let i = 0; i < Math.max(hunk.oldLines.length, hunk.newLines.length); i++) {
@@ -273,27 +158,21 @@ export class SpeculativeFixCache {
     return `${cop}:${codePattern}`
   }
 
-  /**
-   * Retrieves a cached fix if it matches the diagnostic and code.
-   * Returns null if no match or cache expired.
-   */
   get(cop: string, code: string): string | null {
     const key = this.findMatchingKey(cop, code)
-    if (!key) {return null}
+    if (!key) { return null }
 
     const entry = this.cache.get(key)
-    if (!entry) {return null}
+    if (!entry) { return null }
 
-    // Check TTL
+    // Evict expired entry when accessed
     if (Date.now() - entry.generatedAt > this.config.ttlMs) {
       this.cache.delete(key)
       return null
     }
 
-    // Verify the code pattern matches
     try {
-      const regex = new RegExp(entry.codePattern)
-      if (!regex.test(code)) {return null}
+      if (!new RegExp(entry.codePattern).test(code)) { return null }
     } catch {
       return null
     }
@@ -305,21 +184,19 @@ export class SpeculativeFixCache {
     for (const [key, entry] of this.cache.entries()) {
       if (entry.cop === cop) {
         try {
-          if (new RegExp(entry.codePattern).test(code)) {return key}
-        } catch {continue}
+          if (new RegExp(entry.codePattern).test(code)) { return key }
+        } catch {
+          continue
+        }
       }
     }
     return null
   }
 
-  /**
-   * Stores a fix in the cache (e.g., after successful model generation).
-   */
   set(cop: string, codePattern: string, diff: string): void {
     if (this.cache.size >= this.config.maxEntries) {
-      // Evict oldest
       const oldestKey = this.cache.keys().next().value
-      if (oldestKey) {this.cache.delete(oldestKey)}
+      if (oldestKey) { this.cache.delete(oldestKey) }
     }
     const key = this.makeKey(cop, codePattern)
     this.cache.set(key, {
