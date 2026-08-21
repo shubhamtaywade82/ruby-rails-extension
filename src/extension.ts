@@ -182,7 +182,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const rbsIndex = new RBSIndex()
   if (workspaceRoot) {
-    rbsIndex.loadFromWorkspace(workspaceRoot, config.typesRbsSigDir)
+    // Deferred: RBS sig directory walk uses sync I/O; yield to event loop first.
+    setTimeout(() => rbsIndex.loadFromWorkspace(workspaceRoot, config.typesRbsSigDir), 800)
   }
   const steepProvider = new SteepProvider()
   const steepDiagnostics = vscode.languages.createDiagnosticCollection('steep')
@@ -244,7 +245,8 @@ const agent = new RailsAgent(
   // so they're instant when the user requests a fix.
   const speculativeFixCache = new SpeculativeFixCache(agent)
   if (workspaceRoot) {
-    void speculativeFixCache.warm()
+    // Deferred: AI cache warm is CPU/network-heavy, not needed until first fix request.
+    setTimeout(() => void speculativeFixCache.warm(), 8000)
   }
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
@@ -263,32 +265,55 @@ const agent = new RailsAgent(
   // Powers Phase 8 (cross-file duplicate methods) and Phase 11 (dependency cycles) below.
   // Fails soft: commands check persistentIndex.manager and report "still indexing /
   // unavailable" rather than the extension crashing if native modules can't load.
+  // Deferred 5s: heaviest startup cost (tree-sitter + SQLite + full scan); core features
+  // (hovers, navigation, linting) work fine without it.
   const persistentIndex: { manager: PersistentIndexManager | null } = { manager: null }
   if (workspaceRoot) {
-    void PersistentIndexManager.activate(context, workspaceRoot).then(manager => {
-      persistentIndex.manager = manager
-    })
+    setTimeout(() => {
+      void PersistentIndexManager.activate(context, workspaceRoot).then(manager => {
+        persistentIndex.manager = manager
+      })
+    }, 5000)
   }
 
   // Offline DevDocs: downloads (or reuses an already-cached) docset in the background,
   // then swaps devDocsIndexHolder.index so DevDocsHoverProvider picks it up without a
   // window reload. Silent on failure/offline — APIDock/RubyDoc's network-backed hovers
   // and the live `railsforge.openDevDocs` webview keep working regardless.
+  // Deferred 5s: network I/O that can safely wait until core features are up.
   if (workspaceRoot && config.devdocsOfflineEnabled) {
-    void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+    setTimeout(() => {
+      void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+    }, 5000)
   }
 
   // 2. Initial Indexing & Live Workspace Analysis
+  // Staggered to avoid blocking the extension host and the "thundering herd" problem
+  // where every indexer races for CPU/disk simultaneously on a large monolith.
   if (workspaceRoot) {
     void handleWorkspaceAutoOptimization(config.performanceAutoOptimizeWorkspace, env.hasRails)
-    loadSchema(workspaceRoot, schemaIndexer)
-    loadRoutes(workspaceRoot, routesIndexer)
-    loadStimulusControllers(workspaceRoot, stimulusIndexer)
-    factoryBotResolver.indexFactories(workspaceRoot)
-    patternDiagnostics.scanWorkspace()
-    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
-    void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
-    void loadTurboFrames(turboFrameNavigator)
+
+    // Stage 1 (immediate, deferred): Schema + Routes — small files, needed for hovers.
+    setImmediate(() => {
+      loadSchema(workspaceRoot, schemaIndexer)
+      loadRoutes(workspaceRoot, routesIndexer)
+    })
+
+    // Stage 2 (500ms): Secondary indices — stimulus controllers, factories.
+    setTimeout(() => {
+      loadStimulusControllers(workspaceRoot, stimulusIndexer)
+      factoryBotResolver.indexFactories(workspaceRoot)
+    }, 500)
+
+    // Stage 3 (2s): Heavy workspace-wide scanning — pattern/spec/turbo indexing.
+    // Each uses async file I/O internally so they don't block the event loop.
+    setTimeout(() => {
+      void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
+      void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
+      void loadTurboFrames(turboFrameNavigator)
+    }, 2000)
+
+    // File watchers are cheap to register, do immediately.
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
     watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
@@ -303,11 +328,14 @@ const agent = new RailsAgent(
     routesIndexer,
     stimulusIndexer,
   )
-  vscode.window.registerTreeDataProvider('railsforge.architectureView', architectureTreeProvider)
-  vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider())
   const rakeTaskIndexer = new RakeTaskIndexer()
   const rakeTaskTreeProvider = new RakeTaskTreeProvider(rakeTaskIndexer, workspaceRoot)
-  vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider)
+
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('railsforge.architectureView', architectureTreeProvider),
+    vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider()),
+    vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider),
+  )
   void vscode.commands.executeCommand('setContext', 'railsforge.hasRakefile', workspaceRoot ? fs.existsSync(path.join(workspaceRoot, 'Rakefile')) : false)
 
   // 3. Register Providers
@@ -362,33 +390,42 @@ const agent = new RailsAgent(
   )
 
   // 4. Live Document Watchers for Diagnostics & Design Pattern Suggestions
-  const rubocopTimers = new Map<string, NodeJS.Timeout>()
-  const scheduleRubocopLint = (doc: vscode.TextDocument, delayMs: number): void => {
-    const key = doc.uri.toString()
-    const existing = rubocopTimers.get(key)
+  // All diagnostics are debounced to prevent blocking the UI on every keystroke.
+  const lintTimers = new Map<string, NodeJS.Timeout>()
+  const scheduleDiagnostics = (doc: vscode.TextDocument, delayMs: number): void => {
+    if (doc.languageId !== 'ruby' && doc.languageId !== 'erb') {return}
+    const key = `diag:${doc.uri.toString()}`
+    const existing = lintTimers.get(key)
     if (existing) {clearTimeout(existing)}
-    rubocopTimers.set(key, setTimeout(() => {
-      rubocopTimers.delete(key)
+    lintTimers.set(key, setTimeout(() => {
+      lintTimers.delete(key)
+      migrationDiagnostics.updateDiagnostics(doc)
+      deprecationLinter.updateDiagnostics(doc, env)
+      principleLinter.updateDiagnostics(doc)
+      patternDiagnostics.updateDiagnostics(doc)
+      dependencyDiagnostics.updateDiagnostics(doc)
+    }, delayMs))
+  }
+  const scheduleRubocopLint = (doc: vscode.TextDocument, delayMs: number): void => {
+    if (doc.languageId !== 'ruby') {return}
+    const key = `rubocop:${doc.uri.toString()}`
+    const existing = lintTimers.get(key)
+    if (existing) {clearTimeout(existing)}
+    lintTimers.set(key, setTimeout(() => {
+      lintTimers.delete(key)
       void rubocopProvider.lintDocument(doc)
     }, delayMs))
   }
 
   vscode.workspace.onDidOpenTextDocument(doc => {
+    if (doc.languageId !== 'ruby' && doc.languageId !== 'erb') {return}
     testExplorer.discoverTestsInDocument(doc)
-    migrationDiagnostics.updateDiagnostics(doc)
-    deprecationLinter.updateDiagnostics(doc, env)
-    principleLinter.updateDiagnostics(doc)
-    patternDiagnostics.updateDiagnostics(doc)
-    dependencyDiagnostics.updateDiagnostics(doc)
-    scheduleRubocopLint(doc, 0)
+    scheduleDiagnostics(doc, 100)
+    scheduleRubocopLint(doc, 200)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
-    migrationDiagnostics.updateDiagnostics(e.document)
-    deprecationLinter.updateDiagnostics(e.document, env)
-    principleLinter.updateDiagnostics(e.document)
-    patternDiagnostics.updateDiagnostics(e.document)
-    dependencyDiagnostics.updateDiagnostics(e.document)
+    scheduleDiagnostics(e.document, 300)
     scheduleRubocopLint(e.document, 500)
   }, null, context.subscriptions)
 
@@ -527,14 +564,17 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
 
 function watchStimulusControllers(context: vscode.ExtensionContext, indexer: StimulusIndexer): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/app/javascript/controllers/**/*_controller.{js,ts}')
-  const reindex = (uri: vscode.Uri): void => {
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
     if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      indexer.parseControllerCode(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    }
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const code = await fs.promises.readFile(uri.fsPath, 'utf8')
+        indexer.parseControllerCode(uri.fsPath, code)
+      }
+    } catch { /* skip unreadable */ }
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   context.subscriptions.push(watcher)
 }
 
@@ -561,22 +601,28 @@ function isExcludedByConfig(fsPath: string): boolean {
 async function loadTurboFrames(navigator: TurboFrameNavigator): Promise<void> {
   const files = await vscode.workspace.findFiles('app/views/**/*.{erb,haml,slim}', resolveExcludeGlob())
   for (const file of files) {
-    navigator.indexTemplateFrames(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      navigator.indexTemplateFrames(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
 }
 
 function watchTurboFrameTemplates(context: vscode.ExtensionContext, navigator: TurboFrameNavigator): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/app/views/**/*.{erb,haml,slim}')
-  const reindex = (uri: vscode.Uri): void => {
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
     if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      navigator.indexTemplateFrames(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      navigator.removeFile(uri.fsPath)
-    }
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        navigator.indexTemplateFrames(uri.fsPath, content)
+      } else {
+        navigator.removeFile(uri.fsPath)
+      }
+    } catch { /* skip unreadable */ }
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => navigator.removeFile(uri.fsPath))
   context.subscriptions.push(watcher)
 }
@@ -589,9 +635,6 @@ async function loadProjectPatterns(
   relatedCodeLensProvider: RelatedCodeLensProvider,
   semanticSearchIndex: SemanticSearchIndex,
 ): Promise<void> {
-  // Matches both app/services/**/*.rb (Rails) and lib/**/services/**/*.rb (a gem/script
-  // with no app/ directory), since ProjectPatternIndexer.classifyPath now matches the
-  // directory name anywhere in the path.
   const globs = [
     '{app,lib}/**/services/**/*.rb',
     '{app,lib}/**/queries/**/*.rb',
@@ -605,8 +648,10 @@ async function loadProjectPatterns(
   for (const glob of globs) {
     const files = await vscode.workspace.findFiles(glob, excludeGlob)
     for (const file of files) {
-      const content = fs.readFileSync(file.fsPath, 'utf8')
-      indexer.indexFile(file.fsPath, content)
+      try {
+        const content = await fs.promises.readFile(file.fsPath, 'utf8')
+        indexer.indexFile(file.fsPath, content)
+      } catch { /* skip unreadable */ }
     }
   }
   codeLensProvider.refresh()
@@ -620,31 +665,46 @@ async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLe
   const excludeGlob = resolveExcludeGlob()
   const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', excludeGlob)
   for (const file of files) {
-    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      relatedFilesIndex.indexSpecFile(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
   const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', excludeGlob)
   for (const file of testFiles) {
-    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      relatedFilesIndex.indexSpecFile(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
   relatedCodeLensProvider.refresh()
 }
 
 function watchSpecFiles(context: vscode.ExtensionContext, relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/{spec/**/*_spec.rb,test/**/*_test.rb}')
-  const reindex = (uri: vscode.Uri): void => {
-    if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      relatedFilesIndex.indexSpecFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      relatedFilesIndex.removeSpecFile(uri.fsPath)
-    }
-    relatedCodeLensProvider.refresh()
+  let refreshTimer: NodeJS.Timeout | undefined
+  const scheduleRefresh = (): void => {
+    if (refreshTimer) {clearTimeout(refreshTimer)}
+    refreshTimer = setTimeout(() => relatedCodeLensProvider.refresh(), 200)
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        relatedFilesIndex.indexSpecFile(uri.fsPath, content)
+      } else {
+        relatedFilesIndex.removeSpecFile(uri.fsPath)
+      }
+      scheduleRefresh()
+    } catch { /* skip unreadable */ }
+  }
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => {
     relatedFilesIndex.removeSpecFile(uri.fsPath)
-    relatedCodeLensProvider.refresh()
+    scheduleRefresh()
   })
   context.subscriptions.push(watcher)
 }
@@ -661,28 +721,35 @@ function watchPatternFiles(
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
   )
-  const reindex = (uri: vscode.Uri): void => {
-    if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      indexer.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      indexer.removeFile(uri.fsPath)
-    }
-    codeLensProvider.refresh()
-    dependencyGraph.rebuild()
-    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
-    relatedCodeLensProvider.refresh()
-    semanticSearchIndex.pruneStale()
+  let rebuildTimer: NodeJS.Timeout | undefined
+  const scheduleRebuild = (): void => {
+    if (rebuildTimer) {clearTimeout(rebuildTimer)}
+    rebuildTimer = setTimeout(() => {
+      codeLensProvider.refresh()
+      dependencyGraph.rebuild()
+      refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+      relatedCodeLensProvider.refresh()
+      semanticSearchIndex.pruneStale()
+    }, 300)
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        indexer.indexFile(uri.fsPath, content)
+      } else {
+        indexer.removeFile(uri.fsPath)
+      }
+      scheduleRebuild()
+    } catch { /* skip unreadable */ }
+  }
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => {
     indexer.removeFile(uri.fsPath)
-    codeLensProvider.refresh()
-    dependencyGraph.rebuild()
-    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
-    semanticSearchIndex.pruneStale()
-    relatedCodeLensProvider.refresh()
+    scheduleRebuild()
   })
   context.subscriptions.push(watcher)
 }
