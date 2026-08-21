@@ -267,6 +267,11 @@
           "minimum": 5000,
           "description": "Per-request timeout for @rails agent calls. Prevents a hung or overloaded Ollama/cloud endpoint from blocking a fix or chat turn indefinitely."
         },
+        "railsForge.legal.skills.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable legal-domain AI guardrails inspired by the lawve-ai/awesome-legal-skills vscode-extension-builder-lawvable skill pack. Adds jurisdiction, confidentiality, citation, uncertainty, and attorney-review guidance to @rails prompts for legal-tech workspaces."
+        },
         "railsForge.mcp.enabled": {
           "type": "boolean",
           "default": true,

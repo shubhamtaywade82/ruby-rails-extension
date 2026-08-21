@@ -60,6 +60,7 @@ export interface RailsForgeConfig {
   aiTemperature: number
   aiMaxTokens: number
   aiTimeoutMs: number
+  legalSkillsEnabled: boolean
   mcpEnabled: boolean
   apiDocsEnabled: boolean
   performanceCacheSize: number
@@ -113,6 +114,7 @@ export function readConfig(scope?: vscode.ConfigurationScope): RailsForgeConfig 
     aiTemperature: cfg.get<number>('ai.temperature', 0.2),
     aiMaxTokens: cfg.get<number>('ai.maxTokens', 2048),
     aiTimeoutMs: cfg.get<number>('ai.timeoutMs', 120000),
+    legalSkillsEnabled: cfg.get<boolean>('legal.skills.enabled', false),
     mcpEnabled: cfg.get<boolean>('mcp.enabled', true),
     apiDocsEnabled: cfg.get<boolean>('apiDocs.enabled', true),
     performanceCacheSize: cfg.get<number>('performance.cacheSize', 200),
