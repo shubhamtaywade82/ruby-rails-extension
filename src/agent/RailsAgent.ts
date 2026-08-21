@@ -578,10 +578,19 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
     return parts.join('\n\n')
   }
 
-  /**
-   * Builds a minimal system prompt for AI Fix — only context relevant to the diagnostic.
-   * For small models (< 5B), this prunes ~80% of tokens vs the full chat prompt.
-   */
+  private legalSkillsPrompt(): string {
+    return [
+      'Legal-domain skills enabled (lawvable):',
+      '- Treat legal outputs as drafting, issue-spotting, summarization, and workflow assistance; do not present them as legal advice or a substitute for a licensed attorney.',
+      '- Ask for jurisdiction and governing law when material; if absent, state assumptions clearly and avoid jurisdiction-specific claims.',
+      '- Preserve confidentiality: minimize sensitive facts in prompts, avoid unnecessary personal data, and flag privileged/confidential material handling risks.',
+      '- For contracts and policies, produce structured outputs with parties, definitions, obligations, deadlines, remedies, risks, open questions, and negotiation notes.',
+      '- For litigation or regulatory analysis, distinguish facts, assumptions, legal standards, application, evidence gaps, and next actions.',
+      '- Cite source text from provided documents by section/heading when available; never invent statutes, cases, deadlines, or filing requirements.',
+      '- Highlight uncertainty, missing documents, stale law risks, and recommended attorney review before execution or filing.',
+    ].join('\n')
+  }
+
   private buildFixSystemPrompt(diagnosticMessage: string, context: RailsAgentContext): string {
     const rubyVer = this.env?.rubyVersion ?? '3.3.0'
     const isRailsProject = this.env === undefined || this.env.hasRails
@@ -598,6 +607,10 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
         `CRITICAL CONSTRAINT: The active project is a standalone Ruby codebase using Ruby ${rubyVer}. No Rails APIs unless explicitly available.`,
         'Follow SOLID principles. Output ONLY a minimal unified diff. No explanation, no markdown fences.',
       ]
+
+    if (this.config.legalMode) {
+      parts.push(this.legalSkillsPrompt())
+    }
 
     // Only include schema tables relevant to the diagnostic (heuristic: class name in message)
     const modelNames = this.extractModelNamesFromDiagnostic(diagnosticMessage, context)
