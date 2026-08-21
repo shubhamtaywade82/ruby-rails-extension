@@ -77,6 +77,10 @@ Dedicated Activity Bar Panel displaying:
 - **Database & Models:** Indexed table counts and column breakdowns.
 - **Routes & Hotwire:** Route counts and registered Stimulus controller mappings.
 
+### 🧰 Maintainer Extension Builder Checklist
+
+RailsForge includes `RailsForge: Open Extension Builder Checklist` for contributors preparing extension-host changes, webview messaging, manifest updates, packaging, and manual Extension Development Host smoke tests before publishing a `.vsix`.
+
 ### 🛡️ 9. DevSecOps & Zero-Downtime Migration Safety
 
 - **RuboCop Real-Time Engine:** Live diagnostics, 1-click line disables (`# rubocop:disable ...`), and safe (`-a`) or unsafe (`-A`) autocorrect on save.

@@ -1,4 +1,17 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
+
+vi.mock('child_process', () => ({
+  execSync: vi.fn(() => {
+    throw new Error('ldd unavailable in unit tests')
+  }),
+}))
+
+vi.mock('fs', () => ({
+  readFileSync: vi.fn(() => {
+    throw new Error('libc scan unavailable in unit tests')
+  }),
+}))
+
 import { isPersistentIndexSupported } from '../src/indexer/nativeSupport'
 
 describe('isPersistentIndexSupported', () => {
