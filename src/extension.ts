@@ -86,6 +86,7 @@ import { loadEffectiveServiceObjectGuidelines } from './config/EffectiveGuidelin
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
 import { SpeculativeFixCache } from './agent/SpeculativeFixCache'
 import { Logger } from './util/Logger'
+import { handleWorkspaceAutoOptimization, optimizeRailsWorkspace } from './workspace/WorkspaceOptimizer'
 
 const execFileAsync = promisify(execFile)
 
@@ -279,6 +280,7 @@ const agent = new RailsAgent(
 
   // 2. Initial Indexing & Live Workspace Analysis
   if (workspaceRoot) {
+    void handleWorkspaceAutoOptimization(config.performanceAutoOptimizeWorkspace, env.hasRails)
     loadSchema(workspaceRoot, schemaIndexer)
     loadRoutes(workspaceRoot, routesIndexer)
     loadStimulusControllers(workspaceRoot, stimulusIndexer)
@@ -1136,6 +1138,10 @@ function registerCommands(
   steepDiagnostics: vscode.DiagnosticCollection,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.optimizeWorkspacePerformance', async () => {
+      await optimizeRailsWorkspace()
+      void vscode.window.showInformationMessage('RailsForge: Workspace performance settings (file watcher and search exclusions) applied successfully.')
+    }),
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
       const manager = persistentIndex.manager
       if (!manager) {

@@ -288,6 +288,21 @@
           "minimum": 10,
           "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings, APIDock notes) before evicting the least-recently-used entry."
         },
+        "railsForge.performance.autoOptimizeWorkspace": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "prompt",
+            "disabled"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Automatically configure VS Code file watcher and search exclusions for large Rails repositories on startup.",
+            "Show a prompt asking before configuring workspace performance optimizations.",
+            "Do not automatically optimize workspace settings on startup."
+          ],
+          "description": "How RailsForge optimizes VS Code performance (file watcher and search exclusions) for large Rails repositories."
+        },
         "railsForge.apidock.enabled": {
           "type": "boolean",
           "default": true,
@@ -515,6 +530,11 @@
       ]
     },
     "commands": [
+      {
+        "command": "railsforge.optimizeWorkspacePerformance",
+        "title": "RailsForge: Optimize Rails Workspace Performance",
+        "category": "RailsForge"
+      },
       {
         "command": "railsforge.setAiApiKey",
         "title": "RailsForge: Set AI Provider API Key",
