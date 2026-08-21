@@ -216,6 +216,7 @@ const agent = new RailsAgent(
       temperature: config.aiTemperature,
       maxTokens: config.aiMaxTokens,
       timeoutMs: config.aiTimeoutMs,
+      legalMode: config.legalSkillsEnabled,
       ollamaNumCtx: config.ollamaNumCtx,
       ollamaKeepAlive: config.ollamaKeepAlive,
       ollamaRepeatPenalty: config.ollamaRepeatPenalty,

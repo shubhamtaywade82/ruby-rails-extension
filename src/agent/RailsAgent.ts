@@ -44,6 +44,8 @@ export interface RailsAgentConfig {
   temperature?: number
   maxTokens?: number
   timeoutMs?: number
+  /** Add legal-domain safety and drafting guidance to the system prompt. */
+  legalMode?: boolean
   /** Ollama-only knobs — ignored (never sent) for cloud providers. */
   ollamaNumCtx?: number
   ollamaKeepAlive?: string
@@ -548,6 +550,10 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
       ]
 
     const patternSummary = this.summarizePatterns()
+    if (this.config.legalMode) {
+      parts.push(this.legalSkillsPrompt())
+    }
+
     if (patternSummary) {
       parts.push(`Existing Project Patterns (reuse before generating new code):\n${patternSummary}`)
     }
@@ -569,6 +575,19 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
     }
 
     return parts.join('\n\n')
+  }
+
+  private legalSkillsPrompt(): string {
+    return [
+      'Legal-domain skills enabled (lawvable):',
+      '- Treat legal outputs as drafting, issue-spotting, summarization, and workflow assistance; do not present them as legal advice or a substitute for a licensed attorney.',
+      '- Ask for jurisdiction and governing law when material; if absent, state assumptions clearly and avoid jurisdiction-specific claims.',
+      '- Preserve confidentiality: minimize sensitive facts in prompts, avoid unnecessary personal data, and flag privileged/confidential material handling risks.',
+      '- For contracts and policies, produce structured outputs with parties, definitions, obligations, deadlines, remedies, risks, open questions, and negotiation notes.',
+      '- For litigation or regulatory analysis, distinguish facts, assumptions, legal standards, application, evidence gaps, and next actions.',
+      '- Cite source text from provided documents by section/heading when available; never invent statutes, cases, deadlines, or filing requirements.',
+      '- Highlight uncertainty, missing documents, stale law risks, and recommended attorney review before execution or filing.',
+    ].join('\n')
   }
 
   private summarizePatterns(): string {

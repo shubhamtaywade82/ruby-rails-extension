@@ -159,6 +159,21 @@ describe('RailsAgent provider dispatch', () => {
     )
   }
 
+  it('adds legal-domain guardrails to the system prompt when legal mode is enabled', async () => {
+    const fetchMock = vi.fn(cassetteFetch(OLLAMA_CASSETTE))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = buildAgent({ legalMode: true })
+    await agent.run('Draft a mutual NDA clause for an India-focused SaaS customer.', {})
+
+    const [, init] = fetchMock.mock.calls[0]
+    const systemPrompt = (JSON.parse(init.body as string).messages as Array<{ role: string; content: string }>)
+      .find(m => m.role === 'system')?.content
+    expect(systemPrompt).toContain('Legal-domain skills enabled (lawvable)')
+    expect(systemPrompt).toContain('Ask for jurisdiction and governing law')
+    expect(systemPrompt).toContain('do not present them as legal advice')
+  })
+
   it('healthCheck reports true for a cloud provider only when a key is configured, without calling fetch', async () => {
     // No response-shape to validate here (healthCheck only checks res.ok for Ollama,
     // and doesn't call fetch at all for cloud providers), so a plain spy is enough.
