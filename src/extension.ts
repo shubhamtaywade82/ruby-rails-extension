@@ -94,44 +94,6 @@ function applyLogSettings(config: RailsForgeConfig, workspaceRoot: string): void
   Logger.setLogFile(config.logFileEnabled && workspaceRoot ? path.join(workspaceRoot, '.railsforge', 'railsforge.log') : undefined)
 }
 
-/** Opens a concise extension-maintainer checklist sourced from the VS Code extension builder skill. */
-async function openExtensionBuilderChecklist(): Promise<void> {
-  const doc = await vscode.workspace.openTextDocument({
-    language: 'markdown',
-    content: [
-      '# RailsForge Extension Builder Checklist',
-      '',
-      'Use this before packaging or publishing RailsForge as a VS Code extension.',
-      '',
-      '## Build contexts',
-      '',
-      '- Keep extension-host code in Node-compatible TypeScript and avoid browser-only APIs outside webviews.',
-      '- Keep webview UI isolated behind `postMessage` with explicit message types.',
-      '- Externalize the `vscode` module from bundled output.',
-      '',
-      '## Manifest review',
-      '',
-      '- Confirm `package.json` has current `name`, `displayName`, `publisher`, `version`, `engines.vscode`, and `main` fields.',
-      '- Add every user-facing command under `contributes.commands` and gate project-specific commands with `menus.commandPalette.when` contexts.',
-      '- Register any new settings under `contributes.configuration` with defaults and scope-safe descriptions.',
-      '',
-      '## Packaging review',
-      '',
-      '- Run `pnpm run lint`, `pnpm run type-check`, `pnpm run compile`, and `pnpm test` before packaging.',
-      '- Run `pnpm run vsce-package` and inspect the generated `.vsix` contents for source, tests, caches, logs, and local workspace artifacts.',
-      '- Keep `.vscodeignore` aligned with generated assets: ship `dist/**`, `media/**`, `README.md`, license files, and other runtime assets only.',
-      '',
-      '## Manual smoke test',
-      '',
-      '- Press F5 in VS Code to launch an Extension Development Host.',
-      '- Open a Rails app and verify activation, RailsForge views, command palette entries, and one representative Ruby/ERB interaction.',
-      '- Check the RailsForge output channel for startup errors before publishing.',
-    ].join('\n'),
-  })
-
-  await vscode.window.showTextDocument(doc, { preview: false })
-}
-
 export function activate(context: vscode.ExtensionContext): void {
   Logger.init(context)
   const config = readConfig()
@@ -1257,7 +1219,6 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.showLogs', () => {
       Logger.show()
     }),
-    vscode.commands.registerCommand('railsforge.openExtensionBuilderChecklist', openExtensionBuilderChecklist),
     vscode.commands.registerCommand('railsforge.exportCursorRules', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
       if (!root) {

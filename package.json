@@ -536,11 +536,6 @@
         "category": "RailsForge"
       },
       {
-        "command": "railsforge.openExtensionBuilderChecklist",
-        "title": "RailsForge: Open Extension Builder Checklist",
-        "category": "RailsForge"
-      },
-      {
         "command": "railsforge.exportCursorRules",
         "title": "RailsForge: Export Cursor Rules & Register MCP Server",
         "category": "RailsForge"
