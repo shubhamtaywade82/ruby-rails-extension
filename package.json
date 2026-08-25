@@ -869,18 +869,18 @@
     ]
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
+    "@types/node": "^26.2.0",
+    "@types/vscode": "^1.134.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
     "@vscode/vsce": "^3.7.1",
     "copy-webpack-plugin": "^14.0.0",
-    "eslint": "^8.56.0",
+    "eslint": "^10.9.0",
     "ts-loader": "^9.5.1",
-    "typescript": "^5.7.3",
-    "vitest": "^2.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
     "webpack": "^5.91.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^7.2.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
