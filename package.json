@@ -267,6 +267,11 @@
           "minimum": 5000,
           "description": "Per-request timeout for @rails agent calls. Prevents a hung or overloaded Ollama/cloud endpoint from blocking a fix or chat turn indefinitely."
         },
+        "railsForge.legal.skills.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable legal-domain AI guardrails inspired by the lawve-ai/awesome-legal-skills vscode-extension-builder-lawvable skill pack. Adds jurisdiction, confidentiality, citation, uncertainty, and attorney-review guidance to @rails prompts for legal-tech workspaces."
+        },
         "railsForge.mcp.enabled": {
           "type": "boolean",
           "default": true,
@@ -282,6 +287,21 @@
           "default": 200,
           "minimum": 10,
           "description": "Maximum entries kept in RailsForge's bounded in-memory caches (Gem Lens gem-info lookups, semantic-search embeddings, APIDock notes) before evicting the least-recently-used entry."
+        },
+        "railsForge.performance.autoOptimizeWorkspace": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "prompt",
+            "disabled"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Automatically configure VS Code file watcher and search exclusions for large Rails repositories on startup.",
+            "Show a prompt asking before configuring workspace performance optimizations.",
+            "Do not automatically optimize workspace settings on startup."
+          ],
+          "description": "How RailsForge optimizes VS Code performance (file watcher and search exclusions) for large Rails repositories."
         },
         "railsForge.apidock.enabled": {
           "type": "boolean",
@@ -510,6 +530,11 @@
       ]
     },
     "commands": [
+      {
+        "command": "railsforge.optimizeWorkspacePerformance",
+        "title": "RailsForge: Optimize Rails Workspace Performance",
+        "category": "RailsForge"
+      },
       {
         "command": "railsforge.setAiApiKey",
         "title": "RailsForge: Set AI Provider API Key",
@@ -844,18 +869,18 @@
     ]
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
+    "@types/node": "^26.2.0",
+    "@types/vscode": "^1.134.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
     "@vscode/vsce": "^3.7.1",
     "copy-webpack-plugin": "^14.0.0",
-    "eslint": "^8.56.0",
+    "eslint": "^10.9.0",
     "ts-loader": "^9.5.1",
-    "typescript": "^5.7.3",
-    "vitest": "^2.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
     "webpack": "^5.91.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^7.2.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

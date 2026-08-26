@@ -236,11 +236,18 @@ Every setting lives under `railsForge.*` and works at either the **user level** 
   "railsForge.ai.openai.model": "gpt-4o-mini",
   "railsForge.ai.anthropic.model": "claude-sonnet-4-5",
 
+  // Optional legal-tech prompt guardrails for contract/policy/litigation workflows
+  "railsForge.legal.skills.enabled": false,
+
   "railsForge.mcp.enabled": true,
   "railsForge.apiDocs.enabled": true,
   "railsForge.performance.cacheSize": 200
 }
 ```
+
+### Legal-tech AI guardrails
+
+Set `railsForge.legal.skills.enabled` to `true` when using `@rails` in legal-tech workspaces. RailsForge then injects legal-domain guardrails inspired by the `lawve-ai/awesome-legal-skills` `vscode-extension-builder-lawvable` skill pack: jurisdiction assumptions, confidentiality handling, source-text citation discipline, uncertainty callouts, and attorney-review reminders.
 
 ---
 

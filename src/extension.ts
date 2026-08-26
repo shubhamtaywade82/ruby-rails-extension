@@ -48,8 +48,8 @@ import { RelatedHoverProvider } from './graph/RelatedHoverProvider'
 import { FormObjectExtractor } from './refactor/FormObjectExtractor'
 import { ValueObjectExtractor } from './refactor/ValueObjectExtractor'
 import { RefactoringMenuProvider } from './refactor/RefactoringMenuProvider'
-import { RailsAgent, AiFixProposal } from './agent/RailsAgent'
-import { applyUnifiedHunks } from './patch/UnifiedDiff'
+import { RailsAgent, AiFixProposal, RailsAgentConfig } from './agent/RailsAgent'
+import { applyUnifiedHunks, parseUnifiedDiff } from './patch/UnifiedDiff'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
 import { PersistentIndexManager } from './indexer/PersistentIndexManager'
@@ -84,7 +84,9 @@ import { SteepProvider } from './types/SteepProvider'
 import { LearningResource } from './principles/LearningResources'
 import { loadEffectiveServiceObjectGuidelines } from './config/EffectiveGuidelines'
 import { parseVersion, bumpVersion, replaceVersionInContent, VersionBumpPart } from './gems/GemVersionBumper'
+import { SpeculativeFixCache } from './agent/SpeculativeFixCache'
 import { Logger } from './util/Logger'
+import { handleWorkspaceAutoOptimization, optimizeRailsWorkspace } from './workspace/WorkspaceOptimizer'
 
 const execFileAsync = promisify(execFile)
 
@@ -158,7 +160,6 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   applyLogSettings(config, workspaceRoot)
-  context.subscriptions.push(onConfigChanged(() => applyLogSettings(readConfig(), workspaceRoot)))
 
   // Offline DevDocs cache: workspace-local (not globalStorageUri) so the standalone MCP
   // server can find it too — same rationale as PersistentIndexManager's .railsforge/index.sqlite3.
@@ -180,7 +181,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const rbsIndex = new RBSIndex()
   if (workspaceRoot) {
-    rbsIndex.loadFromWorkspace(workspaceRoot, config.typesRbsSigDir)
+    // Deferred: RBS sig directory walk uses sync I/O; yield to event loop first.
+    setTimeout(() => rbsIndex.loadFromWorkspace(workspaceRoot, config.typesRbsSigDir), 800)
   }
   const steepProvider = new SteepProvider()
   const steepDiagnostics = vscode.languages.createDiagnosticCollection('steep')
@@ -202,40 +204,57 @@ export function activate(context: vscode.ExtensionContext): void {
 
   Logger.info(`RailsForge activated. Project type: ${env.projectType}, Ruby: ${env.rubyVersion}, Rails: ${env.hasRails ? env.railsVersion : 'none'}`)
 
-  const ollamaHost = config.ollamaHost
-const agent = new RailsAgent(
+  const getAgentConfig = (cfg: RailsForgeConfig = readConfig()): RailsAgentConfig => ({
+    ollamaHost: cfg.ollamaHost,
+    model: cfg.ollamaModel,
+    provider: cfg.aiProvider,
+    openaiModel: cfg.aiOpenaiModel,
+    openaiBaseUrl: cfg.aiOpenaiBaseUrl,
+    anthropicModel: cfg.aiAnthropicModel,
+    temperature: cfg.aiTemperature,
+    maxTokens: cfg.aiMaxTokens,
+    timeoutMs: cfg.aiTimeoutMs,
+    legalMode: cfg.legalSkillsEnabled,
+    ollamaNumCtx: cfg.ollamaNumCtx,
+    ollamaKeepAlive: cfg.ollamaKeepAlive,
+    ollamaRepeatPenalty: cfg.ollamaRepeatPenalty,
+    ollamaMinP: cfg.ollamaMinP,
+    getApiKey: async () => context.secrets.get(aiApiKeySecretKey(readConfig().aiProvider)),
+    log: (level: 'debug' | 'trace' | 'warn', message: string) => {
+      if (level === 'debug') { Logger.debug(message) }
+      else if (level === 'trace') { Logger.trace(message) }
+      else { Logger.warn(message) }
+    },
+  })
+
+  const agent = new RailsAgent(
     schemaIndexer,
     routesIndexer,
-    {
-      ollamaHost,
-      model: config.ollamaModel,
-      provider: config.aiProvider,
-      openaiModel: config.aiOpenaiModel,
-      openaiBaseUrl: config.aiOpenaiBaseUrl,
-      anthropicModel: config.aiAnthropicModel,
-      temperature: config.aiTemperature,
-      maxTokens: config.aiMaxTokens,
-      timeoutMs: config.aiTimeoutMs,
-      ollamaNumCtx: config.ollamaNumCtx,
-      ollamaKeepAlive: config.ollamaKeepAlive,
-      ollamaRepeatPenalty: config.ollamaRepeatPenalty,
-      ollamaMinP: config.ollamaMinP,
-      getApiKey: () => Promise.resolve(context.secrets.get(aiApiKeySecretKey(config.aiProvider))),
-      log: (level, message) => {
-        if (level === 'debug') { Logger.debug(message) }
-        else if (level === 'trace') { Logger.trace(message) }
-        else { Logger.warn(message) }
-      },
-    },
+    getAgentConfig(config),
     env,
     projectPatternIndexer,
   )
 
+  context.subscriptions.push(onConfigChanged(() => {
+    const freshConfig = readConfig()
+    applyLogSettings(freshConfig, workspaceRoot)
+    agent.updateConfig(getAgentConfig(freshConfig))
+    void vscode.commands.executeCommand('setContext', 'railsforge.aiProvider', freshConfig.aiProvider)
+  }))
+
   const embeddingClient = new EmbeddingClient({
-    ollamaHost,
+    ollamaHost: config.ollamaHost,
     model: config.ollamaEmbeddingModel,
   })
   const semanticSearchIndex = new SemanticSearchIndex(projectPatternIndexer, text => embeddingClient.embed(text), config.performanceCacheSize)
+
+  // Speculative Fix Cache - pre-generates fixes for common RuboCop offenses
+  // so they're instant when the user requests a fix.
+  const speculativeFixCache = new SpeculativeFixCache(agent)
+  if (workspaceRoot) {
+    // Deferred: AI cache warm is CPU/network-heavy, not needed until first fix request.
+    setTimeout(() => void speculativeFixCache.warm(), 8000)
+  }
 
   // 1. Sidebar Chat Webview Provider (Same architecture as PineForge)
   const chatViewProvider = new RailsChatViewProvider(
@@ -253,31 +272,55 @@ const agent = new RailsAgent(
   // Powers Phase 8 (cross-file duplicate methods) and Phase 11 (dependency cycles) below.
   // Fails soft: commands check persistentIndex.manager and report "still indexing /
   // unavailable" rather than the extension crashing if native modules can't load.
+  // Deferred 5s: heaviest startup cost (tree-sitter + SQLite + full scan); core features
+  // (hovers, navigation, linting) work fine without it.
   const persistentIndex: { manager: PersistentIndexManager | null } = { manager: null }
   if (workspaceRoot) {
-    void PersistentIndexManager.activate(context, workspaceRoot).then(manager => {
-      persistentIndex.manager = manager
-    })
+    setTimeout(() => {
+      void PersistentIndexManager.activate(context, workspaceRoot).then(manager => {
+        persistentIndex.manager = manager
+      })
+    }, 5000)
   }
 
   // Offline DevDocs: downloads (or reuses an already-cached) docset in the background,
   // then swaps devDocsIndexHolder.index so DevDocsHoverProvider picks it up without a
   // window reload. Silent on failure/offline — APIDock/RubyDoc's network-backed hovers
   // and the live `railsforge.openDevDocs` webview keep working regardless.
+  // Deferred 5s: network I/O that can safely wait until core features are up.
   if (workspaceRoot && config.devdocsOfflineEnabled) {
-    void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+    setTimeout(() => {
+      void refreshDevDocsCache(devDocsFetcher, devDocsCacheDir, devDocsSlugs, devDocsIndexHolder, false)
+    }, 5000)
   }
 
   // 2. Initial Indexing & Live Workspace Analysis
+  // Staggered to avoid blocking the extension host and the "thundering herd" problem
+  // where every indexer races for CPU/disk simultaneously on a large monolith.
   if (workspaceRoot) {
-    loadSchema(workspaceRoot, schemaIndexer)
-    loadRoutes(workspaceRoot, routesIndexer)
-    loadStimulusControllers(workspaceRoot, stimulusIndexer)
-    factoryBotResolver.indexFactories(workspaceRoot)
-    patternDiagnostics.scanWorkspace()
-    void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
-    void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
-    void loadTurboFrames(turboFrameNavigator)
+    void handleWorkspaceAutoOptimization(config.performanceAutoOptimizeWorkspace, env.hasRails)
+
+    // Stage 1 (immediate, deferred): Schema + Routes — small files, needed for hovers.
+    setImmediate(() => {
+      loadSchema(workspaceRoot, schemaIndexer)
+      loadRoutes(workspaceRoot, routesIndexer)
+    })
+
+    // Stage 2 (500ms): Secondary indices — stimulus controllers, factories.
+    setTimeout(() => {
+      loadStimulusControllers(workspaceRoot, stimulusIndexer)
+      factoryBotResolver.indexFactories(workspaceRoot)
+    }, 500)
+
+    // Stage 3 (2s): Heavy workspace-wide scanning — pattern/spec/turbo indexing.
+    // Each uses async file I/O internally so they don't block the event loop.
+    setTimeout(() => {
+      void loadProjectPatterns(projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
+      void loadSpecFiles(relatedFilesIndex, relatedCodeLensProvider)
+      void loadTurboFrames(turboFrameNavigator)
+    }, 2000)
+
+    // File watchers are cheap to register, do immediately.
     watchProjectFiles(context, workspaceRoot, schemaIndexer, routesIndexer, migrationDiagnostics)
     watchPatternFiles(context, projectPatternIndexer, patternCodeLensProvider, dependencyGraph, dependencyDiagnostics, relatedCodeLensProvider, semanticSearchIndex)
     watchSpecFiles(context, relatedFilesIndex, relatedCodeLensProvider)
@@ -292,11 +335,14 @@ const agent = new RailsAgent(
     routesIndexer,
     stimulusIndexer,
   )
-  vscode.window.registerTreeDataProvider('railsforge.architectureView', architectureTreeProvider)
-  vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider())
   const rakeTaskIndexer = new RakeTaskIndexer()
   const rakeTaskTreeProvider = new RakeTaskTreeProvider(rakeTaskIndexer, workspaceRoot)
-  vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider)
+
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('railsforge.architectureView', architectureTreeProvider),
+    vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider()),
+    vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider),
+  )
   void vscode.commands.executeCommand('setContext', 'railsforge.hasRakefile', workspaceRoot ? fs.existsSync(path.join(workspaceRoot, 'Rakefile')) : false)
 
   // 3. Register Providers
@@ -351,33 +397,42 @@ const agent = new RailsAgent(
   )
 
   // 4. Live Document Watchers for Diagnostics & Design Pattern Suggestions
-  const rubocopTimers = new Map<string, NodeJS.Timeout>()
-  const scheduleRubocopLint = (doc: vscode.TextDocument, delayMs: number): void => {
-    const key = doc.uri.toString()
-    const existing = rubocopTimers.get(key)
+  // All diagnostics are debounced to prevent blocking the UI on every keystroke.
+  const lintTimers = new Map<string, NodeJS.Timeout>()
+  const scheduleDiagnostics = (doc: vscode.TextDocument, delayMs: number): void => {
+    if (doc.languageId !== 'ruby' && doc.languageId !== 'erb') {return}
+    const key = `diag:${doc.uri.toString()}`
+    const existing = lintTimers.get(key)
     if (existing) {clearTimeout(existing)}
-    rubocopTimers.set(key, setTimeout(() => {
-      rubocopTimers.delete(key)
+    lintTimers.set(key, setTimeout(() => {
+      lintTimers.delete(key)
+      migrationDiagnostics.updateDiagnostics(doc)
+      deprecationLinter.updateDiagnostics(doc, env)
+      principleLinter.updateDiagnostics(doc)
+      patternDiagnostics.updateDiagnostics(doc)
+      dependencyDiagnostics.updateDiagnostics(doc)
+    }, delayMs))
+  }
+  const scheduleRubocopLint = (doc: vscode.TextDocument, delayMs: number): void => {
+    if (doc.languageId !== 'ruby') {return}
+    const key = `rubocop:${doc.uri.toString()}`
+    const existing = lintTimers.get(key)
+    if (existing) {clearTimeout(existing)}
+    lintTimers.set(key, setTimeout(() => {
+      lintTimers.delete(key)
       void rubocopProvider.lintDocument(doc)
     }, delayMs))
   }
 
   vscode.workspace.onDidOpenTextDocument(doc => {
+    if (doc.languageId !== 'ruby' && doc.languageId !== 'erb') {return}
     testExplorer.discoverTestsInDocument(doc)
-    migrationDiagnostics.updateDiagnostics(doc)
-    deprecationLinter.updateDiagnostics(doc, env)
-    principleLinter.updateDiagnostics(doc)
-    patternDiagnostics.updateDiagnostics(doc)
-    dependencyDiagnostics.updateDiagnostics(doc)
-    scheduleRubocopLint(doc, 0)
+    scheduleDiagnostics(doc, 100)
+    scheduleRubocopLint(doc, 200)
   }, null, context.subscriptions)
 
   vscode.workspace.onDidChangeTextDocument(e => {
-    migrationDiagnostics.updateDiagnostics(e.document)
-    deprecationLinter.updateDiagnostics(e.document, env)
-    principleLinter.updateDiagnostics(e.document)
-    patternDiagnostics.updateDiagnostics(e.document)
-    dependencyDiagnostics.updateDiagnostics(e.document)
+    scheduleDiagnostics(e.document, 300)
     scheduleRubocopLint(e.document, 500)
   }, null, context.subscriptions)
 
@@ -449,12 +504,14 @@ const agent = new RailsAgent(
     rubyDocProvider,
     devDocsFetcher,
     devDocsCacheDir,
+    speculativeFixCache,
     devDocsSlugs,
     devDocsIndexHolder,
     rakeTaskTreeProvider,
     rbsIndex,
     steepProvider,
     steepDiagnostics,
+    getAgentConfig,
   )
 
   // 5. Register Chat Participant
@@ -515,14 +572,17 @@ function loadStimulusControllers(root: string, indexer: StimulusIndexer): void {
 
 function watchStimulusControllers(context: vscode.ExtensionContext, indexer: StimulusIndexer): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/app/javascript/controllers/**/*_controller.{js,ts}')
-  const reindex = (uri: vscode.Uri): void => {
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
     if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      indexer.parseControllerCode(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    }
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const code = await fs.promises.readFile(uri.fsPath, 'utf8')
+        indexer.parseControllerCode(uri.fsPath, code)
+      }
+    } catch { /* skip unreadable */ }
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   context.subscriptions.push(watcher)
 }
 
@@ -549,22 +609,28 @@ function isExcludedByConfig(fsPath: string): boolean {
 async function loadTurboFrames(navigator: TurboFrameNavigator): Promise<void> {
   const files = await vscode.workspace.findFiles('app/views/**/*.{erb,haml,slim}', resolveExcludeGlob())
   for (const file of files) {
-    navigator.indexTemplateFrames(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      navigator.indexTemplateFrames(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
 }
 
 function watchTurboFrameTemplates(context: vscode.ExtensionContext, navigator: TurboFrameNavigator): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/app/views/**/*.{erb,haml,slim}')
-  const reindex = (uri: vscode.Uri): void => {
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
     if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      navigator.indexTemplateFrames(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      navigator.removeFile(uri.fsPath)
-    }
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        navigator.indexTemplateFrames(uri.fsPath, content)
+      } else {
+        navigator.removeFile(uri.fsPath)
+      }
+    } catch { /* skip unreadable */ }
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => navigator.removeFile(uri.fsPath))
   context.subscriptions.push(watcher)
 }
@@ -577,9 +643,6 @@ async function loadProjectPatterns(
   relatedCodeLensProvider: RelatedCodeLensProvider,
   semanticSearchIndex: SemanticSearchIndex,
 ): Promise<void> {
-  // Matches both app/services/**/*.rb (Rails) and lib/**/services/**/*.rb (a gem/script
-  // with no app/ directory), since ProjectPatternIndexer.classifyPath now matches the
-  // directory name anywhere in the path.
   const globs = [
     '{app,lib}/**/services/**/*.rb',
     '{app,lib}/**/queries/**/*.rb',
@@ -593,8 +656,10 @@ async function loadProjectPatterns(
   for (const glob of globs) {
     const files = await vscode.workspace.findFiles(glob, excludeGlob)
     for (const file of files) {
-      const content = fs.readFileSync(file.fsPath, 'utf8')
-      indexer.indexFile(file.fsPath, content)
+      try {
+        const content = await fs.promises.readFile(file.fsPath, 'utf8')
+        indexer.indexFile(file.fsPath, content)
+      } catch { /* skip unreadable */ }
     }
   }
   codeLensProvider.refresh()
@@ -608,31 +673,46 @@ async function loadSpecFiles(relatedFilesIndex: RelatedFilesIndex, relatedCodeLe
   const excludeGlob = resolveExcludeGlob()
   const files = await vscode.workspace.findFiles('spec/**/*_spec.rb', excludeGlob)
   for (const file of files) {
-    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      relatedFilesIndex.indexSpecFile(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
   const testFiles = await vscode.workspace.findFiles('test/**/*_test.rb', excludeGlob)
   for (const file of testFiles) {
-    relatedFilesIndex.indexSpecFile(file.fsPath, fs.readFileSync(file.fsPath, 'utf8'))
+    try {
+      const content = await fs.promises.readFile(file.fsPath, 'utf8')
+      relatedFilesIndex.indexSpecFile(file.fsPath, content)
+    } catch { /* skip unreadable */ }
   }
   relatedCodeLensProvider.refresh()
 }
 
 function watchSpecFiles(context: vscode.ExtensionContext, relatedFilesIndex: RelatedFilesIndex, relatedCodeLensProvider: RelatedCodeLensProvider): void {
   const watcher = vscode.workspace.createFileSystemWatcher('**/{spec/**/*_spec.rb,test/**/*_test.rb}')
-  const reindex = (uri: vscode.Uri): void => {
-    if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      relatedFilesIndex.indexSpecFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      relatedFilesIndex.removeSpecFile(uri.fsPath)
-    }
-    relatedCodeLensProvider.refresh()
+  let refreshTimer: NodeJS.Timeout | undefined
+  const scheduleRefresh = (): void => {
+    if (refreshTimer) {clearTimeout(refreshTimer)}
+    refreshTimer = setTimeout(() => relatedCodeLensProvider.refresh(), 200)
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        relatedFilesIndex.indexSpecFile(uri.fsPath, content)
+      } else {
+        relatedFilesIndex.removeSpecFile(uri.fsPath)
+      }
+      scheduleRefresh()
+    } catch { /* skip unreadable */ }
+  }
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => {
     relatedFilesIndex.removeSpecFile(uri.fsPath)
-    relatedCodeLensProvider.refresh()
+    scheduleRefresh()
   })
   context.subscriptions.push(watcher)
 }
@@ -649,28 +729,35 @@ function watchPatternFiles(
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/{app,lib}/**/{services,queries,forms,policies,decorators,concerns}/**/*.rb',
   )
-  const reindex = (uri: vscode.Uri): void => {
-    if (isExcludedByConfig(uri.fsPath)) {return}
-    if (fs.existsSync(uri.fsPath)) {
-      indexer.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-    } else {
-      indexer.removeFile(uri.fsPath)
-    }
-    codeLensProvider.refresh()
-    dependencyGraph.rebuild()
-    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
-    relatedCodeLensProvider.refresh()
-    semanticSearchIndex.pruneStale()
+  let rebuildTimer: NodeJS.Timeout | undefined
+  const scheduleRebuild = (): void => {
+    if (rebuildTimer) {clearTimeout(rebuildTimer)}
+    rebuildTimer = setTimeout(() => {
+      codeLensProvider.refresh()
+      dependencyGraph.rebuild()
+      refreshOpenDependencyDiagnostics(dependencyDiagnostics)
+      relatedCodeLensProvider.refresh()
+      semanticSearchIndex.pruneStale()
+    }, 300)
   }
-  watcher.onDidChange(reindex)
-  watcher.onDidCreate(reindex)
+
+  const reindex = async (uri: vscode.Uri): Promise<void> => {
+    if (isExcludedByConfig(uri.fsPath)) {return}
+    try {
+      if (fs.existsSync(uri.fsPath)) {
+        const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+        indexer.indexFile(uri.fsPath, content)
+      } else {
+        indexer.removeFile(uri.fsPath)
+      }
+      scheduleRebuild()
+    } catch { /* skip unreadable */ }
+  }
+  watcher.onDidChange(uri => void reindex(uri))
+  watcher.onDidCreate(uri => void reindex(uri))
   watcher.onDidDelete(uri => {
     indexer.removeFile(uri.fsPath)
-    codeLensProvider.refresh()
-    dependencyGraph.rebuild()
-    refreshOpenDependencyDiagnostics(dependencyDiagnostics)
-    semanticSearchIndex.pruneStale()
-    relatedCodeLensProvider.refresh()
+    scheduleRebuild()
   })
   context.subscriptions.push(watcher)
 }
@@ -942,6 +1029,13 @@ function rubySyntaxError(content: string): Promise<string | null> {
   })
 }
 
+function applyCachedDiff(fullText: string, diff: string): string | null {
+  const hunks = parseUnifiedDiff(diff)
+  if (!hunks) { return null }
+  const result = applyUnifiedHunks(fullText, hunks)
+  return result.ok ? result.text : null
+}
+
 /**
  * Extracts a RuboCop cop name from a diagnostic message. RuboCop diagnostics are
  * `"<message> (<Cop/Name>)"` (RailsForge) or `"<Cop/Name>: <message>"` (direct);
@@ -958,6 +1052,64 @@ type OffenseVerification =
   | { status: 'clean' }
   | { status: 'skipped'; reason: string }
   | { status: 'remaining'; offense: string }
+
+/** Generates a meaningful one-line documentation comment for a class/module. */
+function buildDocComment(className: string, headerLine: string): string {
+  const isModule = headerLine.trim().startsWith('module')
+  const isController = /Controller\b/.test(className)
+  const isModel = /< ApplicationRecord\b/.test(headerLine)
+  const isMailer = /< ActionMailer::Base\b/.test(headerLine)
+  const isJob = /< ApplicationJob\b/.test(headerLine)
+  const isChannel = /< ApplicationCable::Channel\b/.test(headerLine)
+  const isHelper = /Helper\b/.test(className) && !isController
+  const isService = /Service\b/.test(className)
+  const isQuery = /Query\b/.test(className)
+  const isPolicy = /Policy\b/.test(className)
+  const isSerializer = /Serializer\b/.test(className)
+  const isDecorator = /Decorator\b/.test(className)
+  const isForm = /Form\b/.test(className)
+
+  if (isModule) {
+    return `${className} module.`
+  }
+  if (isController) {
+    return 'Base API controller for the application.' // ApplicationController
+  }
+  if (isModel) {
+    return 'ActiveRecord model representing a domain entity.'
+  }
+  if (isMailer) {
+    return 'Application mailer for sending emails.'
+  }
+  if (isJob) {
+    return 'Background job for asynchronous processing.'
+  }
+  if (isChannel) {
+    return 'ActionCable channel for real-time features.'
+  }
+  if (isHelper) {
+    return 'View helper methods for templates.'
+  }
+  if (isService) {
+    return 'Service object encapsulating business logic.'
+  }
+  if (isQuery) {
+    return 'Query object encapsulating database queries.'
+  }
+  if (isPolicy) {
+    return 'Authorization policy for access control.'
+  }
+  if (isSerializer) {
+    return 'Serializer for API response formatting.'
+  }
+  if (isDecorator) {
+    return 'Decorator for presentation logic.'
+  }
+  if (isForm) {
+    return 'Form object for parameter validation and processing.'
+  }
+  return isModule ? `${className} module.` : `${className} class.`
+}
 
 /**
  * Extracts the reported line number from a `ruby -c` error (e.g. "-:11: syntax
@@ -1052,14 +1204,20 @@ function registerCommands(
   rubyDocProvider: RubyDocProvider,
   devDocsFetcher: DevDocsFetcher,
   devDocsCacheDir: string,
+  speculativeFixCache: SpeculativeFixCache,
   devDocsSlugs: string[],
   devDocsIndexHolder: { index: DevDocsOfflineIndex },
   rakeTaskTreeProvider: RakeTaskTreeProvider,
   rbsIndex: RBSIndex,
   steepProvider: SteepProvider,
   steepDiagnostics: vscode.DiagnosticCollection,
+  getAgentConfig: (cfg?: RailsForgeConfig) => RailsAgentConfig,
 ): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand('railsforge.optimizeWorkspacePerformance', async () => {
+      await optimizeRailsWorkspace()
+      void vscode.window.showInformationMessage('RailsForge: Workspace performance settings (file watcher and search exclusions) applied successfully.')
+    }),
     vscode.commands.registerCommand('railsforge.showDependencyCycles', async () => {
       const manager = persistentIndex.manager
       if (!manager) {
@@ -1104,13 +1262,20 @@ function registerCommands(
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter)
     }),
     vscode.commands.registerCommand('railsforge.setAiApiKey', async () => {
-      const provider = readConfig().aiProvider
+      let provider = readConfig().aiProvider
       if (provider === 'ollama') {
-        vscode.window.showInformationMessage('RailsForge: railsForge.ai.provider is "ollama" — no API key needed. Set railsForge.ai.provider to "openai" or "anthropic" first.')
-        return
+        const choice = await vscode.window.showQuickPick(
+          [
+            { label: '$(cloud) OpenAI / Compatible', description: 'OpenAI, OpenRouter, MiniMax, Groq, DeepSeek', provider: 'openai' as const },
+            { label: '$(cloud) Anthropic', description: 'Claude Sonnet / Opus', provider: 'anthropic' as const },
+          ],
+          { placeHolder: 'Select the cloud provider to set an API key for' },
+        )
+        if (!choice) {return}
+        provider = choice.provider
       }
 
-      const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+      const providerLabel = provider === 'openai' ? 'OpenAI / Compatible' : 'Anthropic'
       const key = await vscode.window.showInputBox({
         title: `RailsForge: Set ${providerLabel} API Key`,
         prompt: 'Stored securely via VS Code SecretStorage, never written to settings.json. Leave blank and press Enter to clear the stored key.',
@@ -1126,7 +1291,8 @@ function registerCommands(
       }
 
       await context.secrets.store(aiApiKeySecretKey(provider), key)
-      vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved. (railsForge.ai.provider changes require a window reload to take effect.)`)
+      agent.updateConfig(getAgentConfig())
+      vscode.window.showInformationMessage(`RailsForge: ${providerLabel} API key saved securely.`)
     }),
     vscode.commands.registerCommand('railsforge.generateApiDocs', async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
@@ -1287,11 +1453,19 @@ function registerCommands(
       const fullText = document.getText()
       Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${targetRange.start.line + 1}`)
 
+      // Snapshot the document version at the start so we can detect
+      // concurrent edits that would invalidate our proposed text.
+      const docVersionAtStart = document.version
+
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
         async () => {
           // Review-first: shows the exact change in VS Code's diff editor; nothing
           // is written to the file until the developer explicitly accepts it.
+          // IMPORTANT: `proposed` was computed against `fullText` (captured above).
+          // Before applying, we re-read the document and re-diff so the edit
+          // range always matches the *current* buffer — even if the user made
+          // edits while reviewing the diff preview.
           const reviewAndApply = async (proposed: string, note: string): Promise<void> => {
             if (proposed === fullText) {
               vscode.window.showInformationMessage('RailsForge: AI fix produced no changes.')
@@ -1312,10 +1486,33 @@ function registerCommands(
               return
             }
 
+            // Re-read the document NOW — the user may have edited it while
+            // reviewing the diff preview. Re-diff against the current buffer
+            // so the WorkspaceEdit range is always valid.
+            const currentText = document.getText()
+            let finalProposed = proposed
+            if (currentText !== fullText) {
+              Logger.info(`[AI Fix] Document changed during review (v${docVersionAtStart} → v${document.version}), re-diffing against current buffer`)
+              const hunks = diffLines(fullText, proposed)
+              const { keep } = filterFixHunks(hunks, { startLine: targetRange.start.line, endLine: targetRange.end.line })
+              if (keep.length > 0) {
+                finalProposed = applyHunks(currentText, keep)
+              } else {
+                // Hunks fell outside the range after the document shifted;
+                // fall back to a full-file diff against the current buffer.
+                const freshHunks = diffLines(currentText, proposed)
+                finalProposed = applyHunks(currentText, freshHunks)
+              }
+            }
+
             const edit = new vscode.WorkspaceEdit()
-            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), proposed)
+            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)), finalProposed)
             const applied = await vscode.workspace.applyEdit(edit)
-            if (!applied) {return}
+            if (!applied) {
+              Logger.error(`[AI Fix] workspace.applyEdit returned false for ${vscode.workspace.asRelativePath(uri)}`)
+              vscode.window.showErrorMessage('RailsForge: Failed to apply the edit — the file may have been modified. Please try again.')
+              return
+            }
 
             const editor = vscode.window.activeTextEditor?.document.uri.toString() === uri.toString()
               ? vscode.window.activeTextEditor
@@ -1323,7 +1520,7 @@ function registerCommands(
 
             const appliedRange = new vscode.Range(
               targetRange.start,
-              new vscode.Position(targetRange.start.line + proposed.split('\n').length - 1, 0),
+              new vscode.Position(targetRange.start.line + finalProposed.split('\n').length - 1, 0),
             )
             editor.selection = new vscode.Selection(targetRange.start, targetRange.end)
             editor.revealRange(appliedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
@@ -1400,7 +1597,7 @@ function registerCommands(
 
           // Deterministic fix for common offenses — bypass the model entirely for
           // patterns we can fix programmatically. Currently: Style/Documentation on
-          // a single-line class/module header (adds a one-line comment above it).
+          // a single-line class/module header (adds a meaningful one-line comment above it).
           let deterministicFix: string | null = null
           if (cop === 'Style/Documentation' && targetRange.start.line === targetRange.end.line) {
             const headerLine = fullText.split('\n')[targetRange.start.line]
@@ -1408,7 +1605,7 @@ function registerCommands(
               const lines = fullText.split('\n')
               const indent = headerLine.match(/^\s*/)?.[0] ?? ''
               const className = headerLine.match(/(?:class|module)\s+([A-Z]\w*)/)?.[1] ?? 'Product'
-              const comment = `${indent}# ${className} model.`
+              const comment = `${indent}# ${buildDocComment(className, headerLine)}`
               lines.splice(targetRange.start.line, 0, comment)
               deterministicFix = lines.join('\n')
               Logger.debug(`[AI Fix] Applied deterministic fix for ${cop}`)
@@ -1420,14 +1617,48 @@ function registerCommands(
             if (!syntaxErr) {
               const verification = await verifyOffenseResolved(cop!, rubocop, document.fileName, deterministicFix)
               if (verification.status === 'clean' || verification.status === 'skipped') {
+                // Re-read document to guard against concurrent edits during syntax/verification checks
+                const currentFullText = document.getText()
                 const edit = new vscode.WorkspaceEdit()
-                edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), deterministicFix)
-                await vscode.workspace.applyEdit(edit)
+                edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(currentFullText.length)), deterministicFix)
+                const applied = await vscode.workspace.applyEdit(edit)
+                if (!applied) {
+                  Logger.error('[AI Fix] Deterministic fix: workspace.applyEdit returned false')
+                  vscode.window.showErrorMessage('RailsForge: Failed to apply deterministic fix — the file may have been modified. Please try again.')
+                  return
+                }
                 vscode.window.showInformationMessage(`RailsForge: Deterministic fix applied for "${diagnosticMessage}".`)
                 return
               }
             }
           }
+
+          // Speculative cache: check for pre-generated fix for this cop + code pattern
+          const cachedDiff = cop ? speculativeFixCache.get(cop, code) : null
+          if (cachedDiff) {
+            // Re-read the document to get the latest buffer (avoid stale shadow)
+            const cachedFullText = document.getText()
+            const appliedText = applyCachedDiff(cachedFullText, cachedDiff)
+            if (appliedText && appliedText !== cachedFullText) {
+              const syntaxErr = await rubySyntaxError(appliedText)
+              if (!syntaxErr) {
+                const verification = await verifyOffenseResolved(cop!, rubocop, document.fileName, appliedText)
+                if (verification.status === 'clean' || verification.status === 'skipped') {
+                  const edit = new vscode.WorkspaceEdit()
+                  edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(cachedFullText.length)), appliedText)
+                  const applied = await vscode.workspace.applyEdit(edit)
+                  if (!applied) {
+                    Logger.error('[AI Fix] Cached fix: workspace.applyEdit returned false')
+                    vscode.window.showErrorMessage('RailsForge: Failed to apply cached fix — the file may have been modified. Please try again.')
+                    return
+                  }
+                  vscode.window.showInformationMessage(`RailsForge: Cached fix applied instantly for "${diagnosticMessage}".`)
+                  return
+                }
+              }
+            }
+          }
+
           const MAX_FIX_ATTEMPTS = 4
           let feedback: string | undefined
           let lastText: string | null = null
@@ -1506,16 +1737,21 @@ function registerCommands(
       const diagnostics = vscode.languages.getDiagnostics(targetUri).filter(d => d.source === 'RailsForge Principles')
 
       let applied = 0
+      let failed = 0
       for (const diag of diagnostics) {
         const codeActionContext: vscode.CodeActionContext = { diagnostics: [diag], only: undefined, triggerKind: vscode.CodeActionTriggerKind.Invoke }
         const actions = principleLinter.provideCodeActions(document, diag.range, codeActionContext)
         const deterministic = actions.find(a => a.edit && !a.command)
         if (deterministic?.edit) {
-          await vscode.workspace.applyEdit(deterministic.edit)
-          applied++
+          const ok = await vscode.workspace.applyEdit(deterministic.edit)
+          if (ok) { applied++ } else { failed++ }
         }
       }
-      vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+      if (failed > 0) {
+        vscode.window.showWarningMessage(`RailsForge: Applied ${applied} fix(es), ${failed} failed — the file may have been modified during batch application.`)
+      } else {
+        vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+      }
     }),
     vscode.commands.registerCommand('railsforge.showSimilarPatterns', async (filePath: string, line: number) => {
       const pattern = projectPatternIndexer.findPatternAt(filePath, line)

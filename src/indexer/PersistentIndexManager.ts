@@ -84,23 +84,28 @@ export class PersistentIndexManager implements vscode.Disposable {
 
   private async scanWorkspace(): Promise<void> {
     const files = await vscode.workspace.findFiles(INDEXED_GLOB, resolveExcludeGlob())
-    await Promise.all(files.map(async file => {
+    for (const file of files) {
       try {
-        const content = fs.readFileSync(file.fsPath, 'utf8')
+        const content = await fs.promises.readFile(file.fsPath, 'utf8')
         await this.client.indexFile(file.fsPath, content)
       } catch {
         // Skip unreadable/binary files rather than aborting the whole scan.
       }
-    }))
+    }
   }
 
   private watch(context: vscode.ExtensionContext): void {
     const watcher = vscode.workspace.createFileSystemWatcher(`**/${INDEXED_GLOB}`)
     const reindex = async (uri: vscode.Uri): Promise<void> => {
-      if (fs.existsSync(uri.fsPath)) {
-        await this.client.indexFile(uri.fsPath, fs.readFileSync(uri.fsPath, 'utf8'))
-      } else {
-        await this.client.removeFile(uri.fsPath)
+      try {
+        if (fs.existsSync(uri.fsPath)) {
+          const content = await fs.promises.readFile(uri.fsPath, 'utf8')
+          await this.client.indexFile(uri.fsPath, content)
+        } else {
+          await this.client.removeFile(uri.fsPath)
+        }
+      } catch {
+        // Skip unreadable files
       }
     }
     watcher.onDidChange(reindex)

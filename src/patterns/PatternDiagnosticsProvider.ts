@@ -38,7 +38,9 @@ export class PatternDiagnosticsProvider implements vscode.CodeActionProvider {
     const lineText = document.lineAt(line).text
     const startCol = lineText.length - lineText.trimStart().length
     const range = new vscode.Range(line, startCol, line, lineText.length)
-    const severity = opp.category === 'smell' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information
+    const severity = opp.id === 'SINGLETON-HAZARD'
+      ? vscode.DiagnosticSeverity.Warning
+      : vscode.DiagnosticSeverity.Information
 
     const diag = new vscode.Diagnostic(range, `💡 [${opp.patternName}] ${opp.title}: ${opp.message}`, severity)
     diag.source = 'RailsForge Patterns'

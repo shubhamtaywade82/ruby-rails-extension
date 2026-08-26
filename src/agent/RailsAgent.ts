@@ -15,6 +15,15 @@ function looksLikeDiff(text: string): boolean {
   return /^@@ -/m.test(text) || /^--- /m.test(text) || /^\+\+\+ /m.test(text) || /^diff --git /m.test(text)
 }
 
+function cleanModelOutput(raw: string): string {
+  let cleaned = raw.trim()
+  if (/<think>[\s\S]*?<\/think>/.test(cleaned)) {
+    const outside = cleaned.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+    cleaned = outside.length > 0 ? outside : cleaned.replace(/<\/?think>/g, '').trim()
+  }
+  return cleaned.replace(/^```(?:ruby|diff)?\n?/, '').replace(/\n?```$/, '').trim()
+}
+
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}… (truncated, ${text.length} chars total)`
 }
@@ -44,6 +53,8 @@ export interface RailsAgentConfig {
   temperature?: number
   maxTokens?: number
   timeoutMs?: number
+  /** Add legal-domain safety and drafting guidance to the system prompt. */
+  legalMode?: boolean
   /** Ollama-only knobs — ignored (never sent) for cloud providers. */
   ollamaNumCtx?: number
   ollamaKeepAlive?: string
@@ -70,6 +81,8 @@ export interface RailsAgentContext {
   fileName?: string
   selection?: string
   workspaceRoot?: string
+  diagnosticMessage?: string
+  isFix?: boolean
 }
 
 export interface RailsAgentResult {
@@ -92,9 +105,15 @@ export class RailsAgent {
     private patternIndexer?: ProjectPatternIndexer,
   ) {}
 
+  updateConfig(newConfig: Partial<RailsAgentConfig>): void {
+    this.config = { ...this.config, ...newConfig }
+  }
+
   async run(prompt: string, context: RailsAgentContext): Promise<RailsAgentResult> {
     const startedAt = Date.now()
-    const systemPrompt = this.buildSystemPrompt(context)
+    const systemPrompt = context.isFix
+      ? this.buildFixSystemPrompt(context.diagnosticMessage ?? '', context)
+      : this.buildSystemPrompt(context)
     const provider = this.config.provider ?? 'ollama'
     this.log('debug', `[AI] ${provider} request: model=${this.modelFor(provider)}, prompt=${prompt.length} chars, system=${systemPrompt.length} chars`)
 
@@ -159,16 +178,13 @@ export class RailsAgent {
           }
           : {}),
       })
-      const text = await client.chatText({
+      const chatRes = await client.chat({
         model: this.config.model,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt },
         ],
-        // Ollama-specific knobs: small local models need a real context window
-        // (the default truncates the prompt, which caused malformed diffs and
-        // corrective retries), a token cap to stop rambling, and mild repeat/min-p
-        // filtering. keep_alive keeps the model resident to avoid per-call load time.
+        stream: false,
         options: {
           temperature: this.config.temperature ?? 0.2,
           num_predict: this.config.maxTokens ?? 2048,
@@ -179,6 +195,16 @@ export class RailsAgent {
         keep_alive: this.config.ollamaKeepAlive ?? '30m',
         timeoutMs: this.config.timeoutMs ?? 120000,
       })
+
+      const rawMsg = chatRes.message as unknown as Record<string, unknown> | undefined
+      const text = (typeof rawMsg?.content === 'string' && rawMsg.content.trim().length > 0)
+        ? rawMsg.content
+        : (typeof rawMsg?.thinking === 'string' && rawMsg.thinking.trim().length > 0)
+          ? rawMsg.thinking
+          : (typeof rawMsg?.reasoning_content === 'string' && rawMsg.reasoning_content.trim().length > 0)
+            ? rawMsg.reasoning_content
+            : ''
+
       return { success: true, response: text }
     } catch (err) {
       return { success: false, response: `Failed to connect to local Ollama at ${this.config.ollamaHost}: ${String(err)}` }
@@ -228,8 +254,13 @@ export class RailsAgent {
         return { success: false, response: `${connectionLabel} error: ${res.status} ${res.statusText}` }
       }
 
-      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
-      const text = json.choices?.[0]?.message?.content ?? 'No response generated.'
+      const json = (await res.json()) as { choices?: Array<{ message?: { content?: string; reasoning_content?: string } }> }
+      const msg = json.choices?.[0]?.message
+      const text = (msg?.content && msg.content.trim().length > 0)
+        ? msg.content
+        : (msg?.reasoning_content && msg.reasoning_content.trim().length > 0)
+          ? msg.reasoning_content
+          : ''
       this.log('trace', `[${connectionLabel}] response: ${truncate(safeJson(json), 8000)}`)
       return { success: true, response: text }
     } catch (err) {
@@ -270,10 +301,12 @@ export class RailsAgent {
         return { success: false, response: `Anthropic error: ${res.status} ${res.statusText}` }
       }
 
-      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
+      const json = (await res.json()) as { content?: Array<{ type?: string; text?: string; thinking?: string }> }
       const text = json.content?.find(block => block.type === 'text')?.text
+        ?? json.content?.find(block => block.type === 'thinking')?.thinking
+        ?? ''
       this.log('trace', `[Anthropic] response: ${truncate(safeJson(json), 8000)}`)
-      return { success: true, response: text ?? 'No response generated.' }
+      return { success: true, response: text }
     } catch (err) {
       return { success: false, response: `Failed to connect to Anthropic: ${String(err)}` }
     }
@@ -309,8 +342,11 @@ export class RailsAgent {
         return null
       }
 
-      const cleaned = result.response.trim().replace(/^```(?:ruby|diff)?\n?/, '').replace(/\n?```$/, '')
-      if (!cleaned) {continue}
+      const cleaned = cleanModelOutput(result.response)
+      if (!cleaned) {
+        this.log('warn', `[AI Fix] Model response was empty on attempt ${attempt + 1}`)
+        continue
+      }
 
       const hunks = parseUnifiedDiff(cleaned)
       if (hunks && hunks.length > 0) {
@@ -525,9 +561,6 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
     const tables = this.schemaIndexer.getAllTables().map(t => `${t.name} (${Array.from(t.columns.keys()).join(', ')})`)
     const routes = this.routesIndexer.getAllRoutes().slice(0, 30).map(r => `${r.verb} ${r.uriPattern} => ${r.controller}#${r.action}`)
     const rubyVer = this.env?.rubyVersion ?? '3.3.0'
-    // Undetected env defaults to "assume Rails" (RailsForge's primary use case); an explicitly
-    // detected non-Rails project (a gem/script with no `rails` Gemfile.lock dependency) must not
-    // be told it's constrained to a Rails version it doesn't actually depend on.
     const isRailsProject = this.env === undefined || this.env.hasRails
 
     const parts: string[] = isRailsProject
@@ -548,6 +581,10 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
       ]
 
     const patternSummary = this.summarizePatterns()
+    if (this.config.legalMode) {
+      parts.push(this.legalSkillsPrompt())
+    }
+
     if (patternSummary) {
       parts.push(`Existing Project Patterns (reuse before generating new code):\n${patternSummary}`)
     }
@@ -569,6 +606,103 @@ private buildFixRetryInstruction(code: string, diagnosticMessage: string, previo
     }
 
     return parts.join('\n\n')
+  }
+
+  private legalSkillsPrompt(): string {
+    return [
+      'Legal-domain skills enabled (lawvable):',
+      '- Treat legal outputs as drafting, issue-spotting, summarization, and workflow assistance; do not present them as legal advice or a substitute for a licensed attorney.',
+      '- Ask for jurisdiction and governing law when material; if absent, state assumptions clearly and avoid jurisdiction-specific claims.',
+      '- Preserve confidentiality: minimize sensitive facts in prompts, avoid unnecessary personal data, and flag privileged/confidential material handling risks.',
+      '- For contracts and policies, produce structured outputs with parties, definitions, obligations, deadlines, remedies, risks, open questions, and negotiation notes.',
+      '- For litigation or regulatory analysis, distinguish facts, assumptions, legal standards, application, evidence gaps, and next actions.',
+      '- Cite source text from provided documents by section/heading when available; never invent statutes, cases, deadlines, or filing requirements.',
+      '- Highlight uncertainty, missing documents, stale law risks, and recommended attorney review before execution or filing.',
+    ].join('\n')
+  }
+
+  private buildFixSystemPrompt(diagnosticMessage: string, context: RailsAgentContext): string {
+    const rubyVer = this.env?.rubyVersion ?? '3.3.0'
+    const isRailsProject = this.env === undefined || this.env.hasRails
+
+    const parts: string[] = isRailsProject
+      ? [
+        'You are RailsForge AI, a senior Ruby on Rails engineering assistant.',
+        `CRITICAL CONSTRAINT: The active project strictly uses Ruby ${rubyVer} and Rails ${this.env?.railsVersion ?? '7.1.0'}.`,
+        'Follow SOLID principles, avoid fat controllers, extract business logic to Service Objects, and prevent N+1 queries.',
+        'Output ONLY a minimal unified diff. No explanation, no markdown fences.',
+      ]
+      : [
+        'You are RailsForge AI, a senior Ruby engineering assistant.',
+        `CRITICAL CONSTRAINT: The active project is a standalone Ruby codebase using Ruby ${rubyVer}. No Rails APIs unless explicitly available.`,
+        'Follow SOLID principles. Output ONLY a minimal unified diff. No explanation, no markdown fences.',
+      ]
+
+    if (this.config.legalMode) {
+      parts.push(this.legalSkillsPrompt())
+    }
+
+    // Only include schema tables relevant to the diagnostic (heuristic: class name in message)
+    const modelNames = this.extractModelNamesFromDiagnostic(diagnosticMessage, context)
+    if (modelNames.length > 0) {
+      const relevantTables = this.schemaIndexer.getAllTables()
+        .filter(t => modelNames.some(m => m.toLowerCase() === t.name.toLowerCase()))
+        .map(t => `${t.name} (${Array.from(t.columns.keys()).join(', ')})`)
+      if (relevantTables.length > 0) {
+        parts.push(`Relevant Schema:\n${relevantTables.join('\n')}`)
+      }
+    }
+
+    // Only include patterns matching the diagnostic cop/type
+    const relevantPatterns = this.extractRelevantPatterns(diagnosticMessage)
+    if (relevantPatterns.length > 0) {
+      parts.push(`Relevant Patterns:\n${relevantPatterns.join('\n')}`)
+    }
+
+    if (context.fileName) {
+      parts.push(`Current File: ${context.fileName}`)
+    }
+
+    // Only include the relevant code region (already passed as `context.fileContent`)
+    if (context.fileContent) {
+      parts.push(`File Content:\n\`\`\`ruby\n${context.fileContent}\n\`\`\``)
+    }
+
+    return parts.join('\n\n')
+  }
+
+  private extractModelNamesFromDiagnostic(message: string, context: RailsAgentContext): string[] {
+    const names: string[] = []
+    // Class/module names in backticks
+    const backtickMatches = message.match(/`([A-Z][A-Za-z0-9]+)`/g)
+    if (backtickMatches) {
+      names.push(...backtickMatches.map(m => m.slice(1, -1)))
+    }
+    // Class names in "class X" patterns
+    const classMatches = message.match(/(?:class|module)\s+([A-Z][A-Za-z0-9]+)/g)
+    if (classMatches) {
+      names.push(...classMatches.map(m => m.split(/\s+/)[1]))
+    }
+    // Fallback: extract from current file name
+    if (context.fileName) {
+      const fileBase = context.fileName.split('/').pop()?.replace(/\.rb$/, '')
+      if (fileBase) {names.push(fileBase.replace(/_/g, '').replace(/^[a-z]/, c => c.toUpperCase()))}
+    }
+    return [...new Set(names)]
+  }
+
+  private extractRelevantPatterns(message: string): string[] {
+    if (!this.patternIndexer) {return []}
+    const patterns = this.patternIndexer.getAllPatterns()
+    const copMatch = message.match(/\(([A-Z][A-Za-z0-9/]+)\)/)
+    const cop = copMatch ? copMatch[1] : null
+    if (!cop) {return patterns.slice(0, 3).map(p => `${p.type}: ${p.name} (${p.filePath})`)}
+    // Filter patterns by cop prefix (e.g., Style/, Rails/, Layout/)
+    const copPrefix = cop.split('/')[0]
+    return patterns
+      .filter(p => p.type.toLowerCase().includes(copPrefix.toLowerCase()) || p.name.toLowerCase().includes(cop.toLowerCase()))
+      .slice(0, 3)
+      .map(p => `${p.type}: ${p.name} (${p.filePath})`)
   }
 
   private summarizePatterns(): string {

@@ -11,6 +11,13 @@ vi.mock('fs', () => ({
     throw new Error('libc scan unavailable in unit tests')
   }),
 }))
+const nativeSupportMocks = vi.hoisted(() => ({
+  execSync: vi.fn(),
+  readFileSync: vi.fn(),
+}))
+
+vi.mock('child_process', () => ({ execSync: nativeSupportMocks.execSync }))
+vi.mock('fs', () => ({ readFileSync: nativeSupportMocks.readFileSync }))
 
 import { isPersistentIndexSupported } from '../src/indexer/nativeSupport'
 
@@ -47,6 +54,10 @@ describe('isPersistentIndexSupported on Linux with a mocked process.report', () 
   beforeEach(() => {
     Object.defineProperty(process.versions, 'napi', { value: '10', configurable: true })
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    nativeSupportMocks.execSync.mockReset()
+    nativeSupportMocks.execSync.mockImplementation(() => { throw new Error('ldd unavailable') })
+    nativeSupportMocks.readFileSync.mockReset()
+    nativeSupportMocks.readFileSync.mockImplementation(() => { throw new Error('libc unavailable') })
   })
 
   afterEach(() => {
