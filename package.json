@@ -730,6 +730,12 @@
         "command": "railsforge.generateRBS",
         "title": "RailsForge: Generate RBS Signatures for File",
         "category": "RailsForge"
+      },
+      {
+        "command": "railsforge.applyChatResponse",
+        "title": "RailsForge: Apply Chat Response (diff/create/replace)",
+        "category": "RailsForge",
+        "enablement": "railsforge.aiProvider"
       }
     ],
     "menus": {
