@@ -47,8 +47,8 @@
     "vscode:prepublish": "pnpm run compile",
     "compile": "webpack --mode production",
     "watch": "webpack --watch --mode development",
-    "lint": "eslint src --ext ts",
-    "lint:fix": "eslint src --ext ts --fix",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "type-check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "record-cassettes": "node test/cassettes/record.mjs",
@@ -875,6 +875,7 @@
     ]
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.2.0",
     "@types/vscode": "^1.134.0",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
@@ -883,7 +884,7 @@
     "copy-webpack-plugin": "^14.0.0",
     "eslint": "^10.9.0",
     "ts-loader": "^9.5.1",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.11",
     "webpack": "^5.91.0",
     "webpack-cli": "^7.2.2"

@@ -12,8 +12,8 @@
 
 import * as vscode from 'vscode'
 import * as path from 'path'
-import { parseUnifiedDiff, applyUnifiedHunks, type UnifiedHunk } from '../patch/UnifiedDiff'
-import { diffLines, filterFixHunks, applyHunks, type LineDiffHunk } from '../extension'
+import { parseUnifiedDiff, applyUnifiedHunks } from '../patch/UnifiedDiff'
+import { diffLines, applyHunks } from '../extension'
 import { Logger } from '../util/Logger'
 
 export interface ApplyDiffResult {
@@ -45,7 +45,7 @@ function stripFences(text: string): string {
 export function extractCodeBlocks(markdown: string): Array<{ lang: string; filePath: string | null; code: string }> {
   const blocks: Array<{ lang: string; filePath: string | null; code: string }> = []
   // Match ```lang[:filePath]\n ... ```
-  const re = /```([a-zA-Z0-9_-]+)(?::([\w./\-]+))?\n([\s\S]*?)```/g
+  const re = /```([a-zA-Z0-9_-]+)(?::([\w./-]+))?\n([\s\S]*?)```/g
   let m: RegExpExecArray | null
   while ((m = re.exec(markdown)) !== null) {
     blocks.push({ lang: m[1], filePath: m[2] ?? null, code: m[3] })
@@ -65,7 +65,7 @@ export function inferTargetFile(block: { lang: string; filePath: string | null; 
     return full
   }
   // 2. Preceding comment line like "# path/to/file.rb" or "path/to/file.rb"
-  const headerRe = /^(?:(?:#|File:)\s*)?([\w./\-]+\.rb)\s*$/m
+  const headerRe = /^(?:(?:#|File:)\s*)?([\w./-]+\.rb)\s*$/m
   const match = headerRe.exec(block.precedingText)
   if (match) {
     const full = path.join(workspaceRoot, match[1])
@@ -74,23 +74,6 @@ export function inferTargetFile(block: { lang: string; filePath: string | null; 
   return null
 }
 
-/**
- * Extracts the text immediately preceding a code fence in the markdown.
- */
-function textBeforeBlock(markdown: string, blockIndex: number): string {
-  const re = /```([a-zA-Z0-9_-]+)(?::([\w./\-]+))?\n/g
-  let idx = 0
-  let lastEnd = 0
-  let m: RegExpExecArray | null
-  while ((m = re.exec(markdown)) !== null) {
-    if (idx === blockIndex) {
-      return markdown.slice(lastEnd, m.index)
-    }
-    lastEnd = m.index + m[0].length
-    idx++
-  }
-  return ''
-}
 
 /**
  * Applies an AI-generated unified diff to an existing file.
@@ -301,7 +284,7 @@ async function showDiffPreviewAndApply(
   let finalProposed = proposedText
 
   if (currentText !== originalText) {
-    Logger.info(`[ChatDiffApplier] Document changed during review, re-diffing against current buffer`)
+    Logger.info('[ChatDiffApplier] Document changed during review, re-diffing against current buffer')
     // Re-diff: compute what changed between original→proposed, then
     // replay just those hunks against the current buffer.
     try {
