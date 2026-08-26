@@ -10,15 +10,12 @@ GEM
     language_server-protocol (3.17.0.6)
     logger (1.7.0)
     prism (1.9.0)
-    rbs (4.1.3)
+    rbs (3.6.1)
       logger
-      prism (>= 1.6.0)
-      tsort
-    ruby-lsp (0.26.10)
+    ruby-lsp (0.26.11)
       language_server-protocol (~> 3.17.0)
       prism (>= 1.2, < 2.0)
       rbs (>= 3, < 5)
-    tsort (0.2.0)
 
 PLATFORMS
   ruby
@@ -32,9 +29,8 @@ CHECKSUMS
   logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
   prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
   railsforge-ruby-lsp (0.1.0)
-  rbs (4.1.3) sha256=0c4474a9751cdc14364bfad0b3e53678323bbdc2c31683b0445932867dbab8c4
-  ruby-lsp (0.26.10) sha256=e67284af94423531f6b9a583350596421b5a6a4dd93083f1c2ba03da7c23bbed
-  tsort (0.2.0) sha256=9650a793f6859a43b6641671278f79cfead60ac714148aabe4e3f0060480089f
+  rbs (3.6.1) sha256=ed7273d018556844583d1785ac54194e67eec594d68e317d57fa90ad035532c0
+  ruby-lsp (0.26.11) sha256=4cc8f1587237ff8c9031680b5491df901a82559eeaa1ae96863ffe700b32583d
 
 BUNDLED WITH
   4.0.9
