@@ -1454,11 +1454,19 @@ function registerCommands(
       const fullText = document.getText()
       Logger.info(`[AI Fix] Requesting fix for: "${diagnosticMessage}" in ${vscode.workspace.asRelativePath(uri)}:${targetRange.start.line + 1}`)
 
+      // Snapshot the document version at the start so we can detect
+      // concurrent edits that would invalidate our proposed text.
+      const docVersionAtStart = document.version
+
       await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'RailsForge AI: Generating fix…' },
         async () => {
           // Review-first: shows the exact change in VS Code's diff editor; nothing
           // is written to the file until the developer explicitly accepts it.
+          // IMPORTANT: `proposed` was computed against `fullText` (captured above).
+          // Before applying, we re-read the document and re-diff so the edit
+          // range always matches the *current* buffer — even if the user made
+          // edits while reviewing the diff preview.
           const reviewAndApply = async (proposed: string, note: string): Promise<void> => {
             if (proposed === fullText) {
               vscode.window.showInformationMessage('RailsForge: AI fix produced no changes.')
@@ -1479,10 +1487,33 @@ function registerCommands(
               return
             }
 
+            // Re-read the document NOW — the user may have edited it while
+            // reviewing the diff preview. Re-diff against the current buffer
+            // so the WorkspaceEdit range is always valid.
+            const currentText = document.getText()
+            let finalProposed = proposed
+            if (currentText !== fullText) {
+              Logger.info(`[AI Fix] Document changed during review (v${docVersionAtStart} → v${document.version}), re-diffing against current buffer`)
+              const hunks = diffLines(fullText, proposed)
+              const { keep } = filterFixHunks(hunks, { startLine: targetRange.start.line, endLine: targetRange.end.line })
+              if (keep.length > 0) {
+                finalProposed = applyHunks(currentText, keep)
+              } else {
+                // Hunks fell outside the range after the document shifted;
+                // fall back to a full-file diff against the current buffer.
+                const freshHunks = diffLines(currentText, proposed)
+                finalProposed = applyHunks(currentText, freshHunks)
+              }
+            }
+
             const edit = new vscode.WorkspaceEdit()
-            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), proposed)
+            edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)), finalProposed)
             const applied = await vscode.workspace.applyEdit(edit)
-            if (!applied) {return}
+            if (!applied) {
+              Logger.error(`[AI Fix] workspace.applyEdit returned false for ${vscode.workspace.asRelativePath(uri)}`)
+              vscode.window.showErrorMessage('RailsForge: Failed to apply the edit — the file may have been modified. Please try again.')
+              return
+            }
 
             const editor = vscode.window.activeTextEditor?.document.uri.toString() === uri.toString()
               ? vscode.window.activeTextEditor
@@ -1490,7 +1521,7 @@ function registerCommands(
 
             const appliedRange = new vscode.Range(
               targetRange.start,
-              new vscode.Position(targetRange.start.line + proposed.split('\n').length - 1, 0),
+              new vscode.Position(targetRange.start.line + finalProposed.split('\n').length - 1, 0),
             )
             editor.selection = new vscode.Selection(targetRange.start, targetRange.end)
             editor.revealRange(appliedRange, vscode.TextEditorRevealType.InCenterIfOutsideViewport)
@@ -1587,9 +1618,16 @@ function registerCommands(
             if (!syntaxErr) {
               const verification = await verifyOffenseResolved(cop!, rubocop, document.fileName, deterministicFix)
               if (verification.status === 'clean' || verification.status === 'skipped') {
+                // Re-read document to guard against concurrent edits during syntax/verification checks
+                const currentFullText = document.getText()
                 const edit = new vscode.WorkspaceEdit()
-                edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), deterministicFix)
-                await vscode.workspace.applyEdit(edit)
+                edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(currentFullText.length)), deterministicFix)
+                const applied = await vscode.workspace.applyEdit(edit)
+                if (!applied) {
+                  Logger.error('[AI Fix] Deterministic fix: workspace.applyEdit returned false')
+                  vscode.window.showErrorMessage('RailsForge: Failed to apply deterministic fix — the file may have been modified. Please try again.')
+                  return
+                }
                 vscode.window.showInformationMessage(`RailsForge: Deterministic fix applied for "${diagnosticMessage}".`)
                 return
               }
@@ -1599,18 +1637,22 @@ function registerCommands(
           // Speculative cache: check for pre-generated fix for this cop + code pattern
           const cachedDiff = cop ? speculativeFixCache.get(cop, code) : null
           if (cachedDiff) {
-            const fullText = document.getText()
-            // Apply cached diff by finding the target range
-            // For now, apply as a full-file replacement (simpler and safe for small diffs)
-            const appliedText = applyCachedDiff(fullText, cachedDiff)
-            if (appliedText && appliedText !== fullText) {
+            // Re-read the document to get the latest buffer (avoid stale shadow)
+            const cachedFullText = document.getText()
+            const appliedText = applyCachedDiff(cachedFullText, cachedDiff)
+            if (appliedText && appliedText !== cachedFullText) {
               const syntaxErr = await rubySyntaxError(appliedText)
               if (!syntaxErr) {
                 const verification = await verifyOffenseResolved(cop!, rubocop, document.fileName, appliedText)
                 if (verification.status === 'clean' || verification.status === 'skipped') {
                   const edit = new vscode.WorkspaceEdit()
-                  edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(fullText.length)), appliedText)
-                  await vscode.workspace.applyEdit(edit)
+                  edit.replace(uri, new vscode.Range(document.positionAt(0), document.positionAt(cachedFullText.length)), appliedText)
+                  const applied = await vscode.workspace.applyEdit(edit)
+                  if (!applied) {
+                    Logger.error('[AI Fix] Cached fix: workspace.applyEdit returned false')
+                    vscode.window.showErrorMessage('RailsForge: Failed to apply cached fix — the file may have been modified. Please try again.')
+                    return
+                  }
                   vscode.window.showInformationMessage(`RailsForge: Cached fix applied instantly for "${diagnosticMessage}".`)
                   return
                 }
@@ -1696,16 +1738,21 @@ function registerCommands(
       const diagnostics = vscode.languages.getDiagnostics(targetUri).filter(d => d.source === 'RailsForge Principles')
 
       let applied = 0
+      let failed = 0
       for (const diag of diagnostics) {
         const codeActionContext: vscode.CodeActionContext = { diagnostics: [diag], only: undefined, triggerKind: vscode.CodeActionTriggerKind.Invoke }
         const actions = principleLinter.provideCodeActions(document, diag.range, codeActionContext)
         const deterministic = actions.find(a => a.edit && !a.command)
         if (deterministic?.edit) {
-          await vscode.workspace.applyEdit(deterministic.edit)
-          applied++
+          const ok = await vscode.workspace.applyEdit(deterministic.edit)
+          if (ok) { applied++ } else { failed++ }
         }
       }
-      vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+      if (failed > 0) {
+        vscode.window.showWarningMessage(`RailsForge: Applied ${applied} fix(es), ${failed} failed — the file may have been modified during batch application.`)
+      } else {
+        vscode.window.showInformationMessage(`RailsForge: Applied ${applied} deterministic fix(es). AI fixes must be applied individually via the lightbulb.`)
+      }
     }),
     vscode.commands.registerCommand('railsforge.showSimilarPatterns', async (filePath: string, line: number) => {
       const pattern = projectPatternIndexer.findPatternAt(filePath, line)

@@ -239,15 +239,24 @@ export async function smartApplyResponse(
     const document = await vscode.workspace.openTextDocument(activeFileUri)
     const fullText = document.getText()
     if (selection && selection.length > 0) {
-      // Replace just the selection
-      const selectionStart = fullText.indexOf(selection)
+      // Replace just the selection — re-find the selection in the current buffer
+      // in case the document changed since the LLM response was generated.
+      let selectionStart = fullText.indexOf(selection)
+      // If exact match fails, try trimmed versions (model may strip whitespace)
+      if (selectionStart === -1) {
+        selectionStart = fullText.indexOf(selection.trim())
+      }
       if (selectionStart !== -1) {
+        const actualSelection = fullText.slice(selectionStart, selectionStart + selection.length)
         const start = document.positionAt(selectionStart)
-        const end = document.positionAt(selectionStart + selection.length)
+        const end = document.positionAt(selectionStart + actualSelection.length)
         const edit = new vscode.WorkspaceEdit()
         edit.replace(activeFileUri, new vscode.Range(start, end), code)
         const applied = await vscode.workspace.applyEdit(edit)
-        return { applied, message: applied ? 'Replaced selected code.' : 'Failed to apply edit.' }
+        if (!applied) {
+          Logger.error('[ChatDiffApplier] Selection replace: workspace.applyEdit returned false')
+        }
+        return { applied, message: applied ? 'Replaced selected code.' : 'Failed to apply edit — the file may have changed.' }
       }
     }
   }
@@ -257,6 +266,13 @@ export async function smartApplyResponse(
 
 /**
  * Shared diff preview → confirm → apply flow.
+ *
+ * IMPORTANT: `proposedText` was computed against `originalText` (the buffer at
+ * call time). Between the preview and the user clicking "Apply Changes" the
+ * document may have been edited (externally or by the user). We re-read the
+ * document right before applying so the WorkspaceEdit range always matches
+ * the *current* buffer. If the buffer changed, we re-diff to produce a
+ * correct final text for the current state.
  */
 async function showDiffPreviewAndApply(
   targetUri: vscode.Uri,
@@ -279,12 +295,31 @@ async function showDiffPreviewAndApply(
     return { applied: false, message: 'Changes discarded.' }
   }
 
+  // Re-read the document NOW — it may have changed while the user was
+  // reviewing the diff preview.
+  const currentText = document.getText()
+  let finalProposed = proposedText
+
+  if (currentText !== originalText) {
+    Logger.info(`[ChatDiffApplier] Document changed during review, re-diffing against current buffer`)
+    // Re-diff: compute what changed between original→proposed, then
+    // replay just those hunks against the current buffer.
+    try {
+      const hunks = diffLines(originalText, proposedText)
+      finalProposed = applyHunks(currentText, hunks)
+    } catch {
+      Logger.warn('[ChatDiffApplier] Re-diff failed, applying proposed text as-is')
+      // If re-diff fails (edge case), use the proposed text directly
+    }
+  }
+
   const edit = new vscode.WorkspaceEdit()
-  edit.replace(targetUri, new vscode.Range(document.positionAt(0), document.positionAt(originalText.length)), proposedText)
+  edit.replace(targetUri, new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)), finalProposed)
   const applied = await vscode.workspace.applyEdit(edit)
 
   if (!applied) {
-    return { applied: false, message: 'Failed to apply the edit — the file may have been modified externally.' }
+    Logger.error(`[ChatDiffApplier] workspace.applyEdit returned false for ${targetUri.fsPath}`)
+    return { applied: false, message: 'Failed to apply the edit — the file may have been modified. Please try again.' }
   }
 
   const editor = vscode.window.activeTextEditor?.document.uri.toString() === targetUri.toString()
