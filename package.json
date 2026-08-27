@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/shubhamtaywade82/ruby-rails-extension#readme",
   "engines": {
-    "vscode": "^1.134.0",
+    "vscode": "^1.96.0",
     "node": ">=20"
   },
   "categories": [
@@ -876,7 +876,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.2.0",
-    "@types/vscode": "^1.134.0",
+    "@types/vscode": "~1.96.0",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
     "@typescript-eslint/parser": "^8.67.0",
     "@vscode/vsce": "^3.7.1",

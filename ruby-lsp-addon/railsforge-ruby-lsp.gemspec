@@ -1,6 +1,6 @@
 Gem::Specification.new do |spec|
   spec.name          = 'railsforge-ruby-lsp'
-  spec.version       = '0.1.3'
+  spec.version       = '0.1.4'
   spec.authors       = ['RailsForge']
   spec.summary       = 'Ruby LSP add-on that injects RailsForge schema/route awareness into ruby-lsp completion and hover.'
   spec.description   = <<~DESC
