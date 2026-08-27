@@ -879,6 +879,7 @@
     "@types/vscode": "~1.96.0",
     "@typescript-eslint/eslint-plugin": "^8.67.0",
     "@typescript-eslint/parser": "^8.67.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "@vscode/vsce": "^3.7.1",
     "copy-webpack-plugin": "^14.0.0",
     "eslint": "^10.9.0",
