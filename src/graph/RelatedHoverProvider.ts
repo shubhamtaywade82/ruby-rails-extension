@@ -17,7 +17,7 @@ export class RelatedHoverProvider implements vscode.HoverProvider {
     private patternIndexer: ProjectPatternIndexer,
   ) {}
 
-  provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Hover> {
+  async provideHover(document: vscode.TextDocument, position: vscode.Position): Promise<vscode.Hover | null> {
     const range = document.getWordRangeAtPosition(position)
     if (!range) {return null}
 
@@ -48,8 +48,8 @@ export class RelatedHoverProvider implements vscode.HoverProvider {
     return new vscode.Hover(md, range)
   }
 
-  private hoverForModel(name: string, range: vscode.Range): vscode.Hover | null {
-    const relations = this.relatedIndex.getModelRelations(name)
+  private async hoverForModel(name: string, range: vscode.Range): Promise<vscode.Hover | null> {
+    const relations = await this.relatedIndex.getModelRelations(name)
     const entries = Object.entries(relations.patternsByType)
     if (entries.length === 0 && relations.specCount === 0) {return null}
 

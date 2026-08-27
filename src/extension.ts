@@ -10,6 +10,7 @@ import { promisify } from 'util'
 
 import { SchemaIndexer } from './rails/SchemaIndexer'
 import { RoutesIndexer } from './rails/RoutesIndexer'
+import { RouteHelperCompletionProvider } from './rails/RouteHelperCompletionProvider'
 import { MVCNavigator } from './rails/MVCNavigator'
 import { SchemaHoverProvider } from './rails/SchemaHoverProvider'
 import { RuboCopProvider } from './lint/RuboCopProvider'
@@ -114,9 +115,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const patternDiagnostics = new PatternDiagnosticsProvider()
   const projectPatternIndexer = new ProjectPatternIndexer()
   const patternCodeLensProvider = new PatternCodeLensProvider(projectPatternIndexer)
-  const dependencyGraph = new MinimalDependencyGraph(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const dependencyGraph = new MinimalDependencyGraph(projectPatternIndexer, async (filePath: string) => {
+    try { return await fs.promises.readFile(filePath, 'utf8') } catch { return '' }
+  })
   const dependencyDiagnostics = new DependencyDiagnosticsProvider(dependencyGraph, projectPatternIndexer)
-  const relatedFilesIndex = new RelatedFilesIndex(projectPatternIndexer, filePath => fs.readFileSync(filePath, 'utf8'))
+  const relatedFilesIndex = new RelatedFilesIndex(projectPatternIndexer, async (filePath: string) => {
+    try { return await fs.promises.readFile(filePath, 'utf8') } catch { return '' }
+  })
   const relatedCodeLensProvider = new RelatedCodeLensProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
   const relatedHoverProvider = new RelatedHoverProvider(relatedFilesIndex, dependencyGraph, projectPatternIndexer)
   const docsEngine = new VersionDocsEngine()
@@ -303,8 +308,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Stage 1 (immediate, deferred): Schema + Routes — small files, needed for hovers.
     setImmediate(() => {
-      loadSchema(workspaceRoot, schemaIndexer)
-      loadRoutes(workspaceRoot, routesIndexer)
+      void loadSchema(workspaceRoot, schemaIndexer)
+      void loadRoutes(workspaceRoot, routesIndexer)
     })
 
     // Stage 2 (500ms): Secondary indices — stimulus controllers, factories.
@@ -344,7 +349,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider('railsforge.patternCatalogView', new PatternCatalogTreeProvider()),
     vscode.window.registerTreeDataProvider('railsforge.rakeTasksView', rakeTaskTreeProvider),
   )
-  void vscode.commands.executeCommand('setContext', 'railsforge.hasRakefile', workspaceRoot ? fs.existsSync(path.join(workspaceRoot, 'Rakefile')) : false)
+  void vscode.commands.executeCommand('setContext', 'railsforge.hasRakefile', workspaceRoot && fs.existsSync(path.join(workspaceRoot, 'Rakefile')))
+
 
   // 3. Register Providers
   context.subscriptions.push(
@@ -383,6 +389,11 @@ export function activate(context: vscode.ExtensionContext): void {
       '=',
     ),
     vscode.languages.registerCompletionItemProvider('erb', new ErbTagCompletionProvider(), '%'),
+    vscode.languages.registerCompletionItemProvider(
+      { language: 'ruby', scheme: 'file' },
+      new RouteHelperCompletionProvider(routesIndexer),
+      '_',
+    ),
     vscode.languages.registerOnTypeFormattingEditProvider({ language: 'ruby', scheme: 'file' }, new EndwiseProvider(), '\n'),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, new TestCodeLensProvider()),
     vscode.languages.registerCodeLensProvider({ language: 'ruby', scheme: 'file' }, patternCodeLensProvider),
@@ -664,7 +675,7 @@ async function loadProjectPatterns(
     }
   }
   codeLensProvider.refresh()
-  dependencyGraph.rebuild()
+  void dependencyGraph.rebuild()
   refreshOpenDependencyDiagnostics(dependencyDiagnostics)
   relatedCodeLensProvider.refresh()
   semanticSearchIndex.pruneStale()
@@ -735,7 +746,7 @@ function watchPatternFiles(
     if (rebuildTimer) {clearTimeout(rebuildTimer)}
     rebuildTimer = setTimeout(() => {
       codeLensProvider.refresh()
-      dependencyGraph.rebuild()
+      void dependencyGraph.rebuild()
       refreshOpenDependencyDiagnostics(dependencyDiagnostics)
       relatedCodeLensProvider.refresh()
       semanticSearchIndex.pruneStale()
@@ -910,19 +921,23 @@ async function updateSteepDiagnostics(
   return diagnostics.length
 }
 
-function loadSchema(root: string, indexer: SchemaIndexer): void {
+async function loadSchema(root: string, indexer: SchemaIndexer): Promise<void> {
   const schemaPath = path.join(root, 'db', 'schema.rb')
-  if (fs.existsSync(schemaPath)) {
-    const content = fs.readFileSync(schemaPath, 'utf8')
+  try {
+    const content = await fs.promises.readFile(schemaPath, 'utf8')
     indexer.parseSchema(content)
+  } catch {
+    // db/schema.rb does not exist — not a Rails project with schema
   }
 }
 
-function loadRoutes(root: string, indexer: RoutesIndexer): void {
+async function loadRoutes(root: string, indexer: RoutesIndexer): Promise<void> {
   const routesPath = path.join(root, 'config', 'routes.rb')
-  if (fs.existsSync(routesPath)) {
-    const content = fs.readFileSync(routesPath, 'utf8')
+  try {
+    const content = await fs.promises.readFile(routesPath, 'utf8')
     indexer.parseRoutesDsl(content)
+  } catch {
+    // config/routes.rb does not exist
   }
 }
 
@@ -1787,7 +1802,7 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.showRelatedFiles', async (name: string) => {
       const items: Array<{ label: string; description: string; filePath: string; line?: number }> = []
 
-      const relations = relatedFilesIndex.getModelRelations(name)
+      const relations = await relatedFilesIndex.getModelRelations(name)
       for (const [type, list] of Object.entries(relations.patternsByType)) {
         for (const p of list ?? []) {
           items.push({ label: `$(symbol-class) ${p.name}`, description: type, filePath: p.filePath, line: p.lineStart })

@@ -3,6 +3,7 @@
 src/**
 test/**
 .eslintrc.json
+eslint.config.mjs
 tsconfig.json
 webpack.config.js
 vitest.config.ts
@@ -10,9 +11,14 @@ pnpm-lock.yaml
 *.log
 .github/**
 PRD.md
+FEATURES.md
+PR_DESCRIPTION.md
+skills-lock.json
+.agents/**
 .claude/**
 .gitignore
 pnpm-workspace.yaml
 examples/**
 .railsforge/**
 .ruby-lsp/**
+package-lock.json

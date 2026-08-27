@@ -36,23 +36,23 @@ function buildIndex(): { indexer: ProjectPatternIndexer; related: RelatedFilesIn
 }
 
 describe('RelatedFilesIndex', () => {
-  it('finds patterns related to a model by name match', () => {
+  it('finds patterns related to a model by name match', async () => {
     const { related } = buildIndex()
-    const relations = related.getModelRelations('Order')
+    const relations = await related.getModelRelations('Order')
 
     expect(relations.patternsByType.policy?.map(p => p.name)).toEqual(['OrderPolicy'])
   })
 
-  it('finds patterns related to a model by ActiveRecord usage in the body', () => {
+  it('finds patterns related to a model by ActiveRecord usage in the body', async () => {
     const { related } = buildIndex()
-    const relations = related.getModelRelations('Order')
+    const relations = await related.getModelRelations('Order')
 
     expect(relations.patternsByType.service?.map(p => p.name)).toEqual(['CreateOrderService'])
   })
 
-  it('does not relate unrelated patterns', () => {
+  it('does not relate unrelated patterns', async () => {
     const { related } = buildIndex()
-    const relations = related.getModelRelations('Order')
+    const relations = await related.getModelRelations('Order')
 
     expect(relations.patternsByType.query).toBeUndefined()
   })

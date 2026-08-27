@@ -23,7 +23,7 @@ export class RelatedCodeLensProvider implements vscode.CodeLensProvider {
     this._onDidChangeCodeLenses.fire()
   }
 
-  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+  async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
     if (document.fileName.includes('/app/models/') && !document.fileName.includes('/concerns/')) {
       return this.modelLenses(document)
     }
@@ -35,13 +35,13 @@ export class RelatedCodeLensProvider implements vscode.CodeLensProvider {
     return []
   }
 
-  private modelLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+  private async modelLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
     const text = document.getText()
     const match = /^class\s+([A-Z]\w*)/m.exec(text)
     if (!match) {return []}
 
     const modelName = match[1]
-    const relations = this.relatedIndex.getModelRelations(modelName)
+    const relations = await this.relatedIndex.getModelRelations(modelName)
     const parts = Object.entries(relations.patternsByType).map(
       ([type, list]) => `${list!.length} ${this.pluralizeType(type as PatternType, list!.length)}`,
     )

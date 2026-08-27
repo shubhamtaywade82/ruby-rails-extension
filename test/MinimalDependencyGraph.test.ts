@@ -32,34 +32,34 @@ end
 `,
 }
 
-function buildGraph(): MinimalDependencyGraph {
+async function buildGraph(): Promise<MinimalDependencyGraph> {
   const indexer = new ProjectPatternIndexer()
-  for (const [path, content] of Object.entries(files)) {
-    indexer.indexFile(path, content)
+  for (const [p, content] of Object.entries(files)) {
+    indexer.indexFile(p, content)
   }
   const graph = new MinimalDependencyGraph(indexer, path => files[path])
-  graph.rebuild()
+  await graph.rebuild()
   return graph
 }
 
 describe('MinimalDependencyGraph', () => {
-  it('flags a direct ClassName.call(...) reference as a hard-coded collaborator', () => {
-    const graph = buildGraph()
+  it('flags a direct ClassName.call(...) reference as a hard-coded collaborator', async () => {
+    const graph = await buildGraph()
     const hardCoded = graph.getHardCodedCollaborators('CreateOrderService')
 
     expect(hardCoded).toHaveLength(1)
     expect(hardCoded[0].to).toBe('PaymentGatewayService')
   })
 
-  it('does not flag a collaborator that is already constructor-injected', () => {
-    const graph = buildGraph()
+  it('does not flag a collaborator that is already constructor-injected', async () => {
+    const graph = await buildGraph()
     const hardCoded = graph.getHardCodedCollaborators('InjectedService')
 
     expect(hardCoded).toHaveLength(0)
   })
 
-  it('tracks callers of a given pattern', () => {
-    const graph = buildGraph()
+  it('tracks callers of a given pattern', async () => {
+    const graph = await buildGraph()
     const callers = graph.getCallers('PaymentGatewayService')
 
     expect(callers.map(c => c.from)).toContain('CreateOrderService')

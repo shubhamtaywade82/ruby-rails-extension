@@ -144,7 +144,12 @@ export class RailsAgent {
     if (provider === 'openai') {
       const apiKey = await this.config.getApiKey?.()
       if (!apiKey) {return this.missingApiKeyResult('OpenAI')}
-      const baseUrl = (this.config.openaiBaseUrl ?? 'https://api.openai.com').replace(/\/$/, '')
+      const rawBaseUrl = this.config.openaiBaseUrl ?? 'https://api.openai.com'
+      const baseUrl = rawBaseUrl.replace(/\/$/, '')
+      // Reject non-HTTPS URLs unless targeting localhost (for local proxies)
+      if (!/^https:\/\//i.test(baseUrl) && !/^http:\/\/localhost/i.test(baseUrl) && !/^http:\/\/127\.0\.0\.1/i.test(baseUrl)) {
+        return { success: false, response: `Invalid openaiBaseUrl: "${rawBaseUrl}". Must use HTTPS (or http://localhost for local proxies).` }
+      }
       return this.callOpenAiCompatible(
         `${baseUrl}/v1/chat/completions`,
         this.config.openaiModel ?? 'gpt-4o-mini',

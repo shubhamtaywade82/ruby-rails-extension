@@ -342,8 +342,9 @@ affected.
 
 - Ruby $\ge 2.7$ & Rails $\ge 5.2$
 - Bundler (`Gemfile` / `Gemfile.lock`)
+- **Node $\ge$ 22.14** — the AST-Backed Analysis features (§16) bundle native modules (`better-sqlite3`, `tree-sitter-ruby`) that require N-API >= 10, only available in Node 22.14+. If your VS Code/Cursor build bundles an older Node, §16 disables itself gracefully — everything else in RailsForge is unaffected.
 - *(Optional)* [Ollama](https://ollama.ai/) running locally on `http://localhost:11434` for `@rails` AI assistant features (`ollama run qwen2.5-coder:14b` or `qwen2.5-coder:7b`).
-- The AST-Backed Analysis features (§16) bundle native modules (`better-sqlite3`, `tree-sitter-ruby`) with prebuilt binaries for macOS/Linux/Windows on x64 and arm64, but `better-sqlite3` additionally requires a Node runtime with N-API >= 10, i.e. **Node >= 22.14** (or an Electron built on it) — VS Code/Cursor/VSCodium/Windsurf builds bundling an older Electron won't have those specific features available. If your platform or Node version isn't covered, §16 disables itself — everything else in RailsForge is unaffected.
+- The AST-Backed Analysis features (§16) bundle native modules with prebuilt binaries for macOS/Linux/Windows on x64 and arm64. If your platform or Node version isn't covered, §16 disables itself — everything else in RailsForge is unaffected.
 
 ---
 

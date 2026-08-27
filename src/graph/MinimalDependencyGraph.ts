@@ -22,10 +22,10 @@ export class MinimalDependencyGraph {
 
   constructor(
     private indexer: ProjectPatternIndexer,
-    private readFile: (filePath: string) => string,
+    private readFile: (filePath: string) => string | Promise<string>,
   ) {}
 
-  rebuild(): void {
+  async rebuild(): Promise<void> {
     this.edges = []
     const patterns = this.indexer.getAllPatterns()
     const knownNames = new Set(patterns.map(p => p.name))
@@ -33,7 +33,7 @@ export class MinimalDependencyGraph {
     for (const pattern of patterns) {
       let content: string
       try {
-        content = this.readFile(pattern.filePath)
+        content = await this.readFile(pattern.filePath)
       } catch {
         continue
       }

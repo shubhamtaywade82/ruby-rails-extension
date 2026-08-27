@@ -21,7 +21,7 @@ export class RelatedFilesIndex {
 
   constructor(
     private indexer: ProjectPatternIndexer,
-    private readFile: (filePath: string) => string,
+    private readFile: (filePath: string) => string | Promise<string>,
   ) {}
 
   indexSpecFile(filePath: string, content: string): void {
@@ -58,11 +58,11 @@ export class RelatedFilesIndex {
   }
 
   /** Patterns (services/queries/policies/...) that reference `modelName` in name or body. */
-  getModelRelations(modelName: string): ModelRelations {
+  async getModelRelations(modelName: string): Promise<ModelRelations> {
     const patternsByType: Partial<Record<PatternType, IndexedPattern[]>> = {}
 
     for (const pattern of this.indexer.getAllPatterns()) {
-      if (!this.relatesToModel(pattern, modelName)) {continue}
+      if (!(await this.relatesToModel(pattern, modelName))) {continue}
       const list = patternsByType[pattern.type] ?? []
       list.push(pattern)
       patternsByType[pattern.type] = list
@@ -71,12 +71,12 @@ export class RelatedFilesIndex {
     return { patternsByType, specCount: this.getSpecCount(modelName) }
   }
 
-  private relatesToModel(pattern: IndexedPattern, modelName: string): boolean {
+  private async relatesToModel(pattern: IndexedPattern, modelName: string): Promise<boolean> {
     if (pattern.name.includes(modelName)) {return true}
 
     let content: string
     try {
-      content = this.readFile(pattern.filePath)
+      content = await this.readFile(pattern.filePath)
     } catch {
       return false
     }
