@@ -31,7 +31,7 @@ export interface SqliteDatabase {
 }
 
 export function openIndexDatabase(dbPath: string, readonly = false): SqliteDatabase {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+   
   const Database = require('better-sqlite3')
   const db: SqliteDatabase = new Database(dbPath, { readonly, fileMustExist: readonly })
   if (!readonly) {

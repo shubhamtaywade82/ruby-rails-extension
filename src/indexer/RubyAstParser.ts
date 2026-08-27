@@ -10,9 +10,9 @@
  * depth counting.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+ 
 const Parser = require('tree-sitter')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+ 
 const Ruby = require('tree-sitter-ruby')
 
 export interface ParsedCall {

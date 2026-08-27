@@ -1,5 +1,10 @@
 /**
  * RailsChatParticipant - Native VS Code and Cursor Chat Participant for @rails
+ *
+ * When the AI response contains a unified diff or a full code block that maps
+ * to the active file, a 'Apply Changes' button is shown inline so the user can
+ * review and apply the diff — the same preview-and-apply flow used by the
+ * CodeAction lightbulb's AI fix.
  */
 
 import * as vscode from 'vscode'
@@ -7,6 +12,7 @@ import { RailsAgent } from '../agent/RailsAgent'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { Logger } from '../util/Logger'
+import { extractCodeBlocks, looksLikeDiff } from './ChatDiffApplier'
 
 export class RailsChatParticipant {
   private static instance: RailsChatParticipant | undefined
@@ -79,6 +85,24 @@ export class RailsChatParticipant {
       Logger.warn(`[@rails] Response generation failed: ${result.response}`)
     }
 
+    // Stream the response as markdown
     stream.markdown(result.response)
+
+    // --- NEW: Offer to apply changes when the response contains code/diffs ---
+    if (result.success && editor) {
+      const hasCodeBlocks = extractCodeBlocks(result.response).length > 0
+      const hasDiff = looksLikeDiff(result.response)
+
+      if (hasDiff || hasCodeBlocks) {
+        stream.button({
+          command: 'railsforge.applyChatResponse',
+          title: hasDiff ? 'Apply Diff' : 'Apply Changes',
+          arguments: [result.response, editor.document.uri.toString(), command ?? 'default', selection ?? ''],
+        })
+      }
+    }
   }
 }
+
+// Re-export for type usage in the module
+export type { ApplyDiffResult } from './ChatDiffApplier'
