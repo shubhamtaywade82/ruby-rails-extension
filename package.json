@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/shubhamtaywade82/ruby-rails-extension#readme",
   "engines": {
-    "vscode": "^1.96.0",
+    "vscode": "^1.134.0",
     "node": ">=20"
   },
   "categories": [
