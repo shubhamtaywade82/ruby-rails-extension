@@ -52,6 +52,7 @@ import { RailsAgent, AiFixProposal, RailsAgentConfig } from './agent/RailsAgent'
 import { applyUnifiedHunks, parseUnifiedDiff } from './patch/UnifiedDiff'
 import { RailsChatParticipant } from './chat/RailsChatParticipant'
 import { RailsChatViewProvider } from './chat/RailsChatViewProvider'
+import { smartApplyResponse } from './chat/ChatDiffApplier'
 import { PersistentIndexManager } from './indexer/PersistentIndexManager'
 import { findDuplicateCallSites } from './refactor/DuplicateCallSiteFinder'
 import { specFilePathFor, buildRspecSkeleton } from './refactor/SpecFileGenerator'
@@ -2264,6 +2265,25 @@ function registerCommands(
     vscode.commands.registerCommand('railsforge.showLearningResource', (resource: LearningResource) => {
       vscode.window.showInformationMessage(`📚 ${resource.book}\n${resource.chapter}`, { modal: true, detail: resource.note })
     }),
+    vscode.commands.registerCommand(
+      'railsforge.applyChatResponse',
+      async (responseText: string, uriString: string, command: string, selection: string) => {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+        if (!workspaceRoot) { return }
+        const targetUri = vscode.Uri.parse(uriString)
+        const result = await smartApplyResponse(responseText, {
+          workspaceRoot,
+          activeFileUri: targetUri,
+          command,
+          selection: selection || undefined,
+        })
+        if (!result.applied) {
+          Logger.info(`[Chat] smartApply: ${result.message}`)
+        } else {
+          Logger.info(`[Chat] Changes applied: ${result.message}`)
+        }
+      },
+    ),
   )
 }
 

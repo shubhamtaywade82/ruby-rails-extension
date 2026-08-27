@@ -1,6 +1,11 @@
 /**
  * RailsChatViewProvider - Sidebar webview chat with slash-command picker,
- * @-mention context injection, and token highlighting in the input.
+ * @-mention context injection, and diff-aware code application.
+ *
+ * Code blocks now include an "Apply Diff" button (when the block looks like
+ * a unified diff) and a "Replace File" button (when the block looks like a
+ * full file). Both go through the same diff-preview flow as the CodeAction
+ * lightbulb's AI fix: vscode.diff → user confirms → WorkspaceEdit.
  */
 
 import * as vscode from 'vscode'
@@ -8,12 +13,13 @@ import { RailsAgent } from '../agent/RailsAgent'
 import { SchemaIndexer } from '../rails/SchemaIndexer'
 import { RoutesIndexer } from '../rails/RoutesIndexer'
 import { Logger } from '../util/Logger'
+import { applyDiffToFile, applyFullFileReplacement, createNewFile } from './ChatDiffApplier'
 
 interface WebviewMessage {
   type: string
   prompt?: string
   code?: string
-  mode?: 'replace' | 'insert' | 'create'
+  mode?: 'replace' | 'insert' | 'create' | 'applyDiff' | 'replaceFile'
   fileName?: string
   includeContext?: boolean
 }
@@ -81,7 +87,7 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     }
     if (has('@routes')) {
       const rows = this.routesIndexer.getAllRoutes().slice(0, 40)
-        .map(r => `- ${r.verb} \`${r.uriPattern}\` → \`${r.controller}#${r.action}\``)
+        .map((r: { verb: string; uriPattern: string; controller: string; action: string }) => `- ${r.verb} \`${r.uriPattern}\` → \`${r.controller}#${r.action}\``)
       parts.push(`### @routes:\n${rows.join('\n')}`)
     }
     if (has('@file') && activeCode) {
@@ -124,25 +130,51 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     void this.view?.webview.postMessage({ type: 'stopStreaming' })
   }
 
-  private async applyCode(code: string, mode: 'replace' | 'insert' | 'create', fileName?: string): Promise<void> {
+  /**
+   * Diff-aware code application. Supports 5 modes:
+   * - insert: paste at cursor (legacy)
+   * - replace: replace selection or paste at cursor
+   * - create: write a new file
+   * - applyDiff: parse as unified diff, preview, apply to active file
+   * - replaceFile: preview full-file replacement, apply to active file
+   */
+  private async applyCode(code: string, mode: WebviewMessage['mode'], fileName?: string): Promise<void> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+
+    // Create mode: write a new file
     if (mode === 'create') {
-      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
       if (!root) { return }
-      const target = fileName || await vscode.window.showInputBox({ prompt: 'Enter relative file path (e.g. app/services/my_service.rb)' })
-      if (!target) { return }
-      const fullPath = vscode.Uri.file(`${root}/${target}`)
-      await vscode.workspace.fs.writeFile(fullPath, Buffer.from(code, 'utf8'))
-      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(fullPath))
-      vscode.window.showInformationMessage(`Created ${target}`)
+      const result = await createNewFile(code, root, fileName)
+      vscode.window.showInformationMessage(result.message)
       return
     }
+
+    // Apply Diff mode: parse as unified diff, show preview, apply
+    if (mode === 'applyDiff') {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) { vscode.window.showWarningMessage('No active editor — open a file first.'); return }
+      const result = await applyDiffToFile(code, editor.document.uri, 'RailsForge AI Diff')
+      vscode.window.showInformationMessage(result.message)
+      return
+    }
+
+    // Replace File mode: show full-file diff preview, apply
+    if (mode === 'replaceFile') {
+      const editor = vscode.window.activeTextEditor
+      if (!editor) { vscode.window.showWarningMessage('No active editor — open a file first.'); return }
+      const result = await applyFullFileReplacement(code, editor.document.uri, 'RailsForge AI')
+      vscode.window.showInformationMessage(result.message)
+      return
+    }
+
+    // Legacy modes: insert/replace
     const editor = vscode.window.activeTextEditor
     if (!editor) { vscode.window.showWarningMessage('No active editor to insert code.'); return }
     await editor.edit(eb => {
       if (mode === 'replace' && !editor.selection.isEmpty) { eb.replace(editor.selection, code) }
       else { eb.insert(editor.selection.active, code) }
     })
-    vscode.window.showInformationMessage('✓ Applied code to active editor.')
+    vscode.window.showInformationMessage('Code applied to active editor.')
   }
 
   private getHtml(): string {
@@ -181,9 +213,11 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
     .message.user{align-self:flex-end;background:var(--accent);color:#fff}
     .message.assistant{align-self:flex-start;background:var(--card-bg);border:1px solid var(--border)}
     .message pre{background:var(--code-bg);padding:8px;border-radius:6px;margin:8px 0;overflow-x:auto}
-    .code-actions{margin-top:6px;display:flex;gap:6px}
+    .code-actions{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
     .code-actions button{background:var(--bg);border:1px solid var(--border);color:var(--fg);
       padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer}
+    .code-actions button:hover{border-color:var(--accent);color:var(--accent)}
+    .code-actions .btn-apply{border-color:var(--accent);color:var(--accent);font-weight:600}
     .input-container{padding:10px 12px;border-top:1px solid var(--border);
       background:var(--card-bg);display:flex;flex-direction:column;gap:8px}
     .context-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#94a3b8}
@@ -220,9 +254,9 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div class="header">
-    <div class="title-group"><span>💎 RailsForge AI</span></div>
+    <div class="title-group"><span>RailsForge AI</span></div>
     <div id="statusPill" class="status-pill">
-      <span class="status-dot"></span><span id="statusText">Checking…</span>
+      <span class="status-dot"></span><span id="statusText">Checking...</span>
     </div>
   </div>
 
@@ -237,7 +271,7 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
 
   <div class="messages" id="messagesContainer">
     <div class="message assistant">
-      👋 Welcome to <strong>RailsForge AI</strong>.
+      Welcome to <strong>RailsForge AI</strong>.
       Type <span style="color:var(--cmd);font-weight:600">/command</span> or
       <span style="color:var(--mention);font-weight:600">@schema</span> /
       <span style="color:var(--mention);font-weight:600">@routes</span> /
@@ -255,15 +289,15 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
       <div id="popup" class="popup">
         <div class="popup-header" id="popupHeader">Commands</div>
         <div id="popupList"></div>
-        <div class="kb-hint">↑↓ navigate &nbsp;·&nbsp; Enter/Tab select &nbsp;·&nbsp; Esc dismiss</div>
+        <div class="kb-hint">↑↓ navigate · Enter/Tab select · Esc dismiss</div>
       </div>
       <textarea id="promptInput" class="input-box"
-        placeholder="Ask anything… /command · @schema · @routes · @file · Ctrl+/ for picker"></textarea>
+        placeholder="Ask anything... /command · @schema · @routes · @file · Ctrl+/ for picker"></textarea>
       <div class="input-highlight" id="inputHighlight" aria-hidden="true"></div>
     </div>
     <div class="send-row">
       <button class="send-btn" onclick="handleSend()">Send ↵</button>
-      <span class="hint-text">Enter to send &nbsp;·&nbsp; Shift+Enter newline &nbsp;·&nbsp; Ctrl+/ commands</span>
+      <span class="hint-text">Enter to send · Shift+Enter newline · Ctrl+/ commands</span>
     </div>
   </div>
 
@@ -394,6 +428,16 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
       inputEl.value = ''; updateHighlight();
     }
 
+    // ── Detect if text looks like a unified diff ──
+    function isDiff(text) {
+      return /^@@ -/m.test(text) || /^--- /m.test(text) || /^\\+\\+\\+ /m.test(text) || /^diff --git /m.test(text);
+    }
+
+    // ── Detect if text looks like a full file (has class/module defs) ──
+    function isFullFile(text) {
+      return text.split('\n').length > 10 && /^(?:class|module)\s+[A-Z]/m.test(text);
+    }
+
     // ── Messages from extension host ──
     window.addEventListener('message', event => {
       const msg = event.data;
@@ -410,13 +454,20 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
       const div = document.createElement('div');
       div.className = 'message ' + sender;
       const html = esc(text)
-        .replace(/\`\`\`([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)\`\`\`/g, function(_, lang, code) {
+        .replace(/\x60\x60\x60([a-zA-Z0-9_-]*)\\n([\\s\\S]*?)\x60\x60\x60/g, function(_, lang, code) {
           const raw = code.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
           const enc = encodeURIComponent(raw);
-          return '<pre><code>'+esc(raw)+'</code><div class="code-actions">'+
-            '<button onclick="copyCode('+enc+')">📋 Copy</button>'+
-            '<button onclick="insertCode('+enc+')">📥 Insert</button>'+
-            '</div></pre>';
+          const diff = isDiff(raw);
+          const fullFile = isFullFile(raw);
+          let btns = '<button onclick="copyCode('+enc+')">📋 Copy</button>' +
+                     '<button onclick="insertCode('+enc+')">📥 Insert</button>';
+          if (diff) {
+            btns = '<button class="btn-apply" onclick="applyCodeAction('+enc+',\'applyDiff\')">🔀 Apply Diff</button>' + btns;
+          }
+          if (fullFile && !diff) {
+            btns = '<button class="btn-apply" onclick="applyCodeAction('+enc+',\'replaceFile\')">📄 Replace File</button>' + btns;
+          }
+          return '<pre><code>'+esc(raw)+'</code><div class="code-actions">'+btns+'</div></pre>';
         })
         .replace(/\\n/g, '<br>');
       div.innerHTML = html;
@@ -426,6 +477,7 @@ export class RailsChatViewProvider implements vscode.WebviewViewProvider {
 
     function copyCode(enc) { navigator.clipboard.writeText(decodeURIComponent(enc)); }
     function insertCode(enc) { vscode.postMessage({ type:'applyCode', code:decodeURIComponent(enc), mode:'insert' }); }
+    function applyCodeAction(enc, mode) { vscode.postMessage({ type:'applyCode', code:decodeURIComponent(enc), mode: mode }); }
     function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
     vscode.postMessage({ type: 'webviewReady' });
